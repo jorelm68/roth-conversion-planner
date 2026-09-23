@@ -1,0 +1,164 @@
+import type { FilingStatus } from "./taxData";
+
+export type { FilingStatus };
+
+/** How an extra income stream is taxed. */
+export type IncomeKind =
+  | "ordinary" // wages, pension, rental, annuity: ordinary income
+  | "interest" // interest / non-qualified dividends: ordinary income AND subject to NIIT
+  | "qualified" // long-term gains / qualified dividends: preferential rates AND subject to NIIT
+  | "taxExempt"; // muni interest: not in taxable income, but counts for SS taxation, IRMAA, ACA
+
+export interface IncomeStream {
+  id: string;
+  label: string;
+  kind: IncomeKind;
+  /** Annual amount in today's dollars. */
+  annualAmount: number;
+  startAge: number;
+  endAge: number;
+  /** If true the amount grows with inflation; otherwise it is a fixed nominal amount. */
+  inflationAdjusted: boolean;
+}
+
+/**
+ * unlimited: conversion tax is paid from other savings (balance may go "negative" = extra funds needed, valued at the investment return).
+ * limited:   paid from the outside account until it runs out, then withheld from the IRA.
+ * fromIra:   no outside funds; tax is withheld from the converted amount (10% penalty before 59.5).
+ */
+export type TaxPaymentMode = "unlimited" | "limited" | "fromIra";
+
+export interface PlannerInputs {
+  birthYear: number;
+  currentAge: number;
+  filingStatus: FilingStatus;
+  /** Only used for MFJ. */
+  spouseBirthYear: number;
+
+  tradIraBalance: number;
+  /** After-tax basis in Traditional IRAs (Form 8606). */
+  tradIraBasis: number;
+  rothBalance: number;
+  /** Taxable/other account used to pay taxes. */
+  outsideBalance: number;
+
+  /** Wages in today's dollars, paid until retirementAge (exclusive). 0 if retired. */
+  wagesAnnual: number;
+  retirementAge: number;
+  incomeStreams: IncomeStream[];
+  /** Household Social Security benefit, today's dollars, at claiming. */
+  socialSecurityAnnual: number;
+  socialSecurityStartAge: number;
+
+  /** Effective state income tax rate on income other than Social Security (fraction). */
+  stateTaxRate: number;
+
+  investmentReturn: number; // nominal, fraction
+  inflation: number; // fraction
+  outsideTaxDrag: number; // annual tax drag on the outside account, fraction
+
+  paymentMode: TaxPaymentMode;
+
+  conversionStartAge: number;
+  lastConversionAge: number;
+  /** Age at death / evaluation age. */
+  lifespan: number;
+
+  aca: {
+    enabled: boolean;
+    /** Second-lowest-cost silver premium for the household, annual, today's dollars. */
+    benchmarkPremium: number;
+    premiumGrowth: number; // fraction
+  };
+  /** Optional MAGI for IRMAA look-back years before the plan starts. null = estimate. */
+  priorMagi1: number | null; // last year
+  priorMagi2: number | null; // two years ago
+
+  heirs: {
+    count: number;
+    /** Each heir's other taxable income, today's dollars per year (single filer). */
+    otherIncome: number;
+    stateTaxRate: number;
+  };
+}
+
+/** Symbolic conversion target, resolved each year into a dollar amount. */
+export type Target =
+  | { kind: "none" }
+  | { kind: "all" }
+  | { kind: "even" }
+  | { kind: "amount"; value: number }
+  | { kind: "bracket"; rate: number } // fill ordinary taxable income to the top of this bracket
+  | { kind: "irmaa"; tier: number } // keep MAGI at/below IRMAA threshold #tier (0-based) of the premium year (+2)
+  | { kind: "aca"; ratio: number }; // keep MAGI at/below ratio x FPL
+
+export interface Plan {
+  /** Index = years since plan start. Missing entries mean "no conversion". */
+  targets: Target[];
+  /** Highest marginal ordinary bracket the plan is allowed to enter (0.37 = no cap). */
+  cap: number;
+}
+
+export interface YearRow {
+  k: number;
+  year: number;
+  age: number;
+  rmd: number;
+  conversion: number;
+  taxableConversion: number;
+  wagesAndOther: number;
+  socialSecurity: number;
+  taxableSocialSecurity: number;
+  agi: number;
+  magi: number;
+  taxableIncome: number;
+  marginalBracket: number;
+  /** Combined marginal rate on the next dollar of IRA income (federal + state + SS torpedo + NIIT). */
+  marginalAllIn: number;
+  federalTax: number;
+  stateTax: number;
+  niit: number;
+  irmaa: number;
+  acaSubsidyLost: number;
+  penalty: number;
+  totalCost: number;
+  tradEnd: number;
+  rothEnd: number;
+  outsideEnd: number;
+  /** Portion of tax paid by withholding from the conversion. */
+  withheld: number;
+}
+
+export interface Totals {
+  federalTax: number;
+  stateTax: number;
+  niit: number;
+  irmaa: number;
+  acaSubsidyLost: number;
+  penalty: number;
+  converted: number;
+  rmds: number;
+}
+
+export interface ScenarioResult {
+  id: string;
+  name: string;
+  description: string;
+  cap: number;
+  totals: Totals;
+  /** Sum of all owner-side costs (federal, state, NIIT, IRMAA, penalty, lost ACA subsidy). */
+  ownerCost: number;
+  peakBracket: number;
+  /** Highest bracket used in a year in which a conversion was made (0 if none). */
+  peakConversionBracket: number;
+  heirsTax: number;
+  tradEnd: number;
+  rothEnd: number;
+  outsideEnd: number;
+  /** Roth + outside + Traditional IRA net of heirs' tax, in nominal dollars at end of lifespan year. */
+  legacy: number;
+  /** legacy in today's dollars. */
+  legacyReal: number;
+  inflationFactorAtEnd: number;
+  rows: YearRow[];
+}
