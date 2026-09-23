@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "npx serve out",
+    "start": "npx serve@14 out",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -21,5 +21,8 @@
     "@types/react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }
