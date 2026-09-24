@@ -7,6 +7,8 @@ import type { WorkerMessage } from "@/engine/workerTypes";
 
 export interface PlannerState {
   output: PlannerOutput | null;
+  /** The exact inputs `output` was calculated from (inputs may have changed since). */
+  outputInputs: PlannerInputs | null;
   running: boolean;
   progress: number;
   label: string;
@@ -18,7 +20,7 @@ export interface PlannerState {
  * Nothing leaves the browser: no network calls, no storage.
  */
 export function usePlanner(inputs: PlannerInputs, debounceMs = 500): PlannerState {
-  const [state, setState] = useState<PlannerState>({ output: null, running: false, progress: 0, label: "", errors: [] });
+  const [state, setState] = useState<PlannerState>({ output: null, outputInputs: null, running: false, progress: 0, label: "", errors: [] });
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
@@ -37,7 +39,7 @@ export function usePlanner(inputs: PlannerInputs, debounceMs = 500): PlannerStat
           if (cancelled) return;
           try {
             const output = runPlanner(inputs);
-            setState({ output, running: false, progress: 1, label: "", errors: [] });
+            setState({ output, outputInputs: inputs, running: false, progress: 1, label: "", errors: [] });
           } catch (e) {
             setState((s) => ({ ...s, running: false, errors: [e instanceof Error ? e.message : String(e)] }));
           }
@@ -52,7 +54,7 @@ export function usePlanner(inputs: PlannerInputs, debounceMs = 500): PlannerStat
           const m = e.data;
           if (m.type === "progress") setState((s) => ({ ...s, progress: m.fraction, label: m.label }));
           else if (m.type === "done") {
-            setState({ output: m.output, running: false, progress: 1, label: "", errors: [] });
+            setState({ output: m.output, outputInputs: inputs, running: false, progress: 1, label: "", errors: [] });
             worker.terminate();
           } else {
             setState((s) => ({ ...s, running: false, errors: [m.message] }));

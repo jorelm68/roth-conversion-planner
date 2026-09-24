@@ -6,6 +6,8 @@ import { downloadExcelReport } from "@/report/downloadReport";
 import { LineChart, StackedBars } from "./charts";
 import { money, pct } from "./format";
 import { viewOf, type View } from "@/report/metrics";
+import { usePlannerContext } from "./PlannerProvider";
+import { HOW_HASH } from "./useHashView";
 
 interface Props {
   output: PlannerOutput;
@@ -16,7 +18,8 @@ const bracketLabel = (s: ScenarioResult) => (s.peakBracket > 0 ? pct(s.peakBrack
 
 export function Results({ output, inputs }: Props) {
   const [real, setReal] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  // Kept in shared state so the "How it's calculated" page opens on the same strategy.
+  const { scenarioId: selected, setScenarioId: setSelected } = usePlannerContext();
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
@@ -99,6 +102,9 @@ export function Results({ output, inputs }: Props) {
             <input type="checkbox" checked={real} onChange={(e) => setReal(e.target.checked)} />
             <span>Show in today's dollars</span>
           </label>
+          <a href={HOW_HASH} className="btn secondary">
+            How it&apos;s calculated
+          </a>
           <button type="button" className="btn" disabled={exporting} onClick={onExport}>
             {exporting ? "Building report…" : "Download Excel report"}
           </button>
@@ -288,6 +294,7 @@ function YearTraceView({ inputs, scenario, k, onClose, onMove }: { inputs: Plann
         <div className="trace-nav">
           <button type="button" className="btn secondary" disabled={idx <= 0} onClick={() => onMove(ks[idx - 1])}>← Previous year</button>
           <button type="button" className="btn secondary" disabled={idx >= ks.length - 1} onClick={() => onMove(ks[idx + 1])}>Next year →</button>
+          <YearFormulasLink scenarioId={scenario.id} k={k} />
           <button type="button" className="btn secondary" onClick={onClose}>Close</button>
         </div>
       </div>
@@ -313,5 +320,21 @@ function YearTraceView({ inputs, scenario, k, onClose, onMove }: { inputs: Plann
         ))}
       </div>
     </section>
+  );
+}
+
+function YearFormulasLink({ scenarioId, k }: { scenarioId: string; k: number }) {
+  const { setScenarioId, setFocusK } = usePlannerContext();
+  return (
+    <a
+      href={HOW_HASH}
+      className="btn secondary"
+      onClick={() => {
+        setScenarioId(scenarioId);
+        setFocusK(k);
+      }}
+    >
+      All formulas for this year
+    </a>
   );
 }

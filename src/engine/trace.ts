@@ -56,7 +56,7 @@ const text = (label: string, value: string, note?: string, key?: string): TraceL
 const dollars = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 const pc = (r: number, d = 0) => `${(r * 100).toFixed(d)}%`;
 
-function describeTarget(p: TraceParams): { text: string; limit?: TraceLine } {
+export function describeTarget(p: TraceParams): { text: string; limit?: TraceLine } {
   const { target, inputs, yd } = p;
   const status = inputs.filingStatus;
   switch (target.kind) {
