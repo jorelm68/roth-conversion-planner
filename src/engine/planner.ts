@@ -1,5 +1,5 @@
 import { buildBaseline, simulate, type Baseline, type SimState } from "./simulate";
-import type { PlannerInputs, Plan, ScenarioResult, Target } from "./types";
+import type { PlannerInputs, Plan, ScenarioResult, Target, TraceSection } from "./types";
 
 export type Progress = (fraction: number, label: string) => void;
 
@@ -99,6 +99,7 @@ function toResult(i: PlannerInputs, base: Baseline, id: string, name: string, de
     legacy: o.legacy,
     legacyReal: o.legacy / Math.pow(1 + i.inflation, last.k),
     inflationFactorAtEnd: Math.pow(1 + i.inflation, last.k),
+    plan,
     rows: o.rows,
   };
 }
@@ -191,4 +192,13 @@ export function runPlanner(inputs: PlannerInputs, onProgress?: Progress): Planne
 
   const recommended = scenarios.slice().sort((a, b) => b.legacy - a.legacy || a.peakBracket - b.peakBracket)[0];
   return { scenarios, recommendedId: recommended.id, warnings };
+}
+
+/**
+ * Re-runs a scenario and returns the full, step-by-step calculation for one plan year
+ * (`k` = years since the plan started; 0 is the current year). For review and testing.
+ */
+export function explainYear(inputs: PlannerInputs, plan: Plan, k: number): TraceSection[] {
+  const base = buildBaseline(inputs);
+  return simulate(inputs, base, plan, { traceK: k }).trace ?? [];
 }

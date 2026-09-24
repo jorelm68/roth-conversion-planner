@@ -48,8 +48,7 @@ export default function Home() {
       <footer>
         <p>
           For education only, not tax or investment advice. Uses 2026 federal law (brackets, standard and senior deductions, IRMAA, ACA subsidy schedule, Uniform
-          Lifetime Table) indexed for inflation, and assumes today's rules stay in place. See <code>docs/ASSUMPTIONS.md</code> in the repository for every modeling
-          assumption and simplification. Confirm any plan with a CPA or fiduciary advisor.
+          Lifetime Table) indexed for inflation, and assumes today's rules stay in place. See <code>docs/ASSUMPTIONS.md</code> for every modeling assumption and <code>docs/PRIVACY.md</code> for how your data is handled. Confirm any plan with a CPA or fiduciary advisor.
         </p>
       </footer>
     </main>

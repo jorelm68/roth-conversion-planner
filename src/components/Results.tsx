@@ -1,50 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import type { PlannerInputs, PlannerOutput, ScenarioResult, YearRow } from "@/engine";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { explainYear, type PlannerInputs, type PlannerOutput, type ScenarioResult, type TraceLine, type YearRow } from "@/engine";
+import { downloadExcelReport } from "@/report/downloadReport";
 import { LineChart, StackedBars } from "./charts";
 import { money, pct } from "./format";
+import { viewOf, type View } from "@/report/metrics";
 
 interface Props {
   output: PlannerOutput;
   inputs: PlannerInputs;
-}
-
-interface View {
-  federal: number;
-  state: number;
-  health: number; // IRMAA + lost ACA subsidy
-  other: number; // NIIT + early-withdrawal penalty
-  owner: number;
-  heirs: number;
-  allIn: number;
-  converted: number;
-  trad: number;
-  roth: number;
-  outside: number;
-  legacy: number;
-}
-
-function viewOf(s: ScenarioResult, real: boolean, inflation: number): View {
-  const d = (k: number) => (real ? 1 / Math.pow(1 + inflation, k) : 1);
-  let federal = 0, state = 0, irmaa = 0, aca = 0, niit = 0, pen = 0, converted = 0;
-  for (const r of s.rows) {
-    const f = d(r.k);
-    federal += r.federalTax * f;
-    state += r.stateTax * f;
-    irmaa += r.irmaa * f;
-    aca += r.acaSubsidyLost * f;
-    niit += r.niit * f;
-    pen += r.penalty * f;
-    converted += r.conversion * f;
-  }
-  const e = real ? 1 / s.inflationFactorAtEnd : 1;
-  const owner = federal + state + irmaa + aca + niit + pen;
-  const heirs = s.heirsTax * e;
-  return {
-    federal, state, health: irmaa + aca, other: niit + pen, owner, heirs, allIn: owner + heirs, converted,
-    trad: s.tradEnd * e, roth: s.rothEnd * e, outside: s.outsideEnd * e, legacy: s.legacy * e,
-  };
 }
 
 const bracketLabel = (s: ScenarioResult) => (s.peakBracket > 0 ? pct(s.peakBracket) : "—");
@@ -52,6 +17,20 @@ const bracketLabel = (s: ScenarioResult) => (s.peakBracket > 0 ? pct(s.peakBrack
 export function Results({ output, inputs }: Props) {
   const [real, setReal] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const onExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadExcelReport(inputs, output);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const sorted = useMemo(() => output.scenarios.slice().sort((a, b) => b.legacy - a.legacy), [output]);
   const views = useMemo(() => new Map(sorted.map((s) => [s.id, viewOf(s, real, inflationOf(inputs))])), [sorted, real, inputs]);
@@ -115,11 +94,20 @@ export function Results({ output, inputs }: Props) {
 
       <div className="toolbar">
         <h2>Strategies side by side</h2>
-        <label className="check">
-          <input type="checkbox" checked={real} onChange={(e) => setReal(e.target.checked)} />
-          <span>Show in today's dollars</span>
-        </label>
+        <div className="toolbar-actions">
+          <label className="check">
+            <input type="checkbox" checked={real} onChange={(e) => setReal(e.target.checked)} />
+            <span>Show in today's dollars</span>
+          </label>
+          <button type="button" className="btn" disabled={exporting} onClick={onExport}>
+            {exporting ? "Building report…" : "Download Excel report"}
+          </button>
+        </div>
       </div>
+      {exportError && <p className="warn">Could not build the report: {exportError}</p>}
+      <p className="muted small">
+        The report is built in your browser and saved to your device; nothing is uploaded. It contains your personal financial details, so store it accordingly.
+      </p>
       <p className="muted small">All amounts in {unit}. Click a column heading to see its year-by-year schedule below.</p>
       <div className="table-scroll">
         <table className="compare">
@@ -161,6 +149,8 @@ const inflationOf = (i: PlannerInputs) => i.inflation;
 const signed = (n: number) => `${n >= 0 ? "+" : "−"}${money(Math.abs(n))}`;
 
 function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs: PlannerInputs }) {
+  const [openK, setOpenK] = useState<number | null>(null);
+  useEffect(() => setOpenK(null), [s.id]);
   const f = (r: YearRow, v: number) => (real ? v / Math.pow(1 + inputs.inflation, r.k) : v);
   const bars = s.rows.map((r) => ({
     x: r.age,
@@ -208,6 +198,10 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
         </div>
       </div>
 
+      <p className="muted small">Click any year to see the full step-by-step calculation behind it.</p>
+      {openK !== null && s.rows.some((r) => r.k === openK) && (
+        <YearTraceView inputs={inputs} scenario={s} k={openK} onClose={() => setOpenK(null)} onMove={setOpenK} />
+      )}
       <div className="table-scroll">
         <table className="years">
           <thead>
@@ -230,8 +224,12 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
           </thead>
           <tbody>
             {s.rows.map((r) => (
-              <tr key={r.k} className={r.conversion > 0 ? "conv" : ""}>
-                <td>{r.age}</td>
+              <tr key={r.k} className={`${r.conversion > 0 ? "conv" : ""} ${r.k === openK ? "open" : ""}`} onClick={() => setOpenK(r.k)}>
+                <td>
+                  <button type="button" className="link year-link" onClick={() => setOpenK(r.k)} aria-label={`Show the calculation for age ${r.age}`}>
+                    {r.age}
+                  </button>
+                </td>
                 <td>{r.year}</td>
                 <td>{money(f(r, r.rmd))}</td>
                 <td>{money(f(r, r.conversion))}</td>
@@ -249,6 +247,59 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
             ))}
           </tbody>
         </table>
+      </div>
+    </section>
+  );
+}
+
+function fmtLine(l: TraceLine): string {
+  if (l.fmt === "text") return String(l.value);
+  const v = l.value as number;
+  if (l.fmt === "usd") return money(v);
+  if (l.fmt === "pct") return pct(v, 2);
+  return v.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+const KEY_LINES = new Set(["federalTax", "agi", "conversion", "rmd", "taxableIncome", "totalCost"]);
+
+function YearTraceView({ inputs, scenario, k, onClose, onMove }: { inputs: PlannerInputs; scenario: ScenarioResult; k: number; onClose: () => void; onMove: (k: number) => void }) {
+  const sections = useMemo(() => explainYear(inputs, scenario.plan, k), [inputs, scenario, k]);
+  const row = scenario.rows.find((r) => r.k === k)!;
+  const ks = scenario.rows.map((r) => r.k);
+  const idx = ks.indexOf(k);
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }), [k]);
+
+  return (
+    <section className="trace" ref={ref} aria-label={`Calculation for age ${row.age}`}>
+      <div className="trace-head">
+        <div>
+          <h3>
+            Age {row.age} · tax year {row.year} · {scenario.name}
+          </h3>
+          <p className="muted small">Every step below is computed by the same engine that produced the table. Amounts are in {row.year} dollars.</p>
+        </div>
+        <div className="trace-nav">
+          <button type="button" className="btn secondary" disabled={idx <= 0} onClick={() => onMove(ks[idx - 1])}>← Previous year</button>
+          <button type="button" className="btn secondary" disabled={idx >= ks.length - 1} onClick={() => onMove(ks[idx + 1])}>Next year →</button>
+          <button type="button" className="btn secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+      <div className="trace-sections">
+        {sections.map((sec) => (
+          <table key={sec.title} className="trace-table">
+            <caption>{sec.title}</caption>
+            <tbody>
+              {sec.lines.map((l, i) => (
+                <tr key={i} className={l.key && KEY_LINES.has(l.key) ? "key" : ""}>
+                  <th scope="row">{l.label}</th>
+                  <td>{fmtLine(l)}</td>
+                  <td className="how">{l.note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ))}
       </div>
     </section>
   );

@@ -160,5 +160,23 @@ export interface ScenarioResult {
   /** legacy in today's dollars. */
   legacyReal: number;
   inflationFactorAtEnd: number;
+  /** The conversion plan that produced this result (lets the UI re-run any year with a full calculation trace). */
+  plan: Plan;
   rows: YearRow[];
+}
+
+/** One line of a year's calculation walk-through. */
+export interface TraceLine {
+  /** Stable identifier used by tests and exports (e.g. "agi", "federalTax"). */
+  key?: string;
+  label: string;
+  value: number | string;
+  fmt: "usd" | "pct" | "num" | "text";
+  /** Formula or explanation, in words. */
+  note?: string;
+}
+
+export interface TraceSection {
+  title: string;
+  lines: TraceLine[];
 }

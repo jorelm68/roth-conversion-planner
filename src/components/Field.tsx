@@ -39,6 +39,10 @@ export function NumField({ label, value, onChange, prefix, suffix, step = 1, hin
         <input
           type="text"
           inputMode="decimal"
+          autoComplete="off"
+          spellCheck={false}
+          data-lpignore="true"
+          data-1p-ignore="true"
           value={text}
           step={step}
           disabled={disabled}
