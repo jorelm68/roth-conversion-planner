@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { defaultInputs, type PlannerInputs } from "@/engine";
+import { ImportSettings } from "@/components/ImportSettings";
 import { InputForm } from "@/components/InputForm";
 import { Results } from "@/components/Results";
 import { usePlanner } from "@/components/usePlanner";
@@ -20,6 +21,8 @@ export default function Home() {
           torpedo, Medicare IRMAA, ACA subsidies, RMDs and what your heirs will owe. <strong>Everything runs in your browser. Nothing is sent or stored.</strong>
         </p>
       </header>
+
+      <ImportSettings current={inputs} onImport={setInputs} />
 
       <InputForm inputs={inputs} onChange={patch} onReset={() => setInputs(defaultInputs())} />
 

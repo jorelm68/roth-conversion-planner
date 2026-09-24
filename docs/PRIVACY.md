@@ -1,6 +1,6 @@
 # Privacy and data handling
 
-**Short version:** everything you type is processed in your browser's memory and disappears when you close or reload the tab. The site has no server code, no database, no accounts, no analytics and no tracking. The Excel report is generated in your browser and saved to *your* device.
+**Short version:** everything you type is processed in your browser's memory and disappears when you close or reload the tab. The site has no server code, no database, no accounts, no analytics and no tracking. The Excel report is generated in your browser and saved to *your* device, and importing one reads it locally without uploading it.
 
 ## How this is enforced (not just promised)
 
@@ -12,6 +12,7 @@
 | **No third parties** | No analytics, error-reporting, fonts or CDNs. Nothing is loaded from another domain. |
 | **Automated guard** | `src/__tests__/privacy.test.ts` fails the build's test run if anyone adds a network call, storage API, external URL, analytics dependency, or weakens the CSP. |
 | **Excel export** | Built in memory with `exceljs` from a Blob and saved through the browser's download mechanism. Nothing is uploaded. |
+| **Excel import** | The file you pick (or drop) is read with the browser's File API and parsed in memory. It is never uploaded or stored; only the settings are copied into the form. |
 
 ## What the hosting provider can still see
 

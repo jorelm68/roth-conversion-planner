@@ -1,5 +1,6 @@
-import type { Workbook, Worksheet } from "exceljs";
-import { explainYear, type PlannerInputs, type PlannerOutput, type ScenarioResult } from "@/engine";
+import type { DataValidation, Workbook, Worksheet } from "exceljs";
+import { explainYear, type FilingStatus, type PlannerInputs, type PlannerOutput, type ScenarioResult, type TaxPaymentMode } from "@/engine";
+import { FILING_LABELS, INPUT_FIELDS, KIND_LABELS, PAYMENT_LABELS, YES_NO, type FieldKind, type InputField } from "./inputFields";
 import { viewOf, type View } from "./metrics";
 
 const USD = '"$"#,##0;[Red]-"$"#,##0';
@@ -23,61 +24,81 @@ function sheetName(wb: Workbook, wanted: string): string {
   return name;
 }
 
-const kindLabel = { ordinary: "Ordinary", interest: "Interest / non-qualified dividends", qualified: "Gains / qualified dividends", taxExempt: "Tax-exempt interest" } as const;
-const payLabel = { unlimited: "From other savings (unlimited)", limited: "From outside account, then from the IRA", fromIra: "From the IRA (no outside funds)" } as const;
+const EDIT_FILL = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF4C2" } } as const;
+const GREY = { argb: "FF8A94A6" };
+const SPARE_INCOME_ROWS = 15;
 
+const FIELD_FMT: Partial<Record<FieldKind, string>> = { usd: USD, usdOrBlank: USD, pct: "0.00%", year: "0", age: "0", count: "0" };
+
+const listValidation = (values: string[]): DataValidation => ({
+  type: "list",
+  allowBlank: true,
+  formulae: [`"${values.join(",")}"`],
+  showErrorMessage: true,
+  errorStyle: "warning",
+  errorTitle: "Choose from the list",
+  error: `Allowed values: ${values.join(" / ")}`,
+});
+
+function displayValue(f: InputField, i: PlannerInputs): string | number | null {
+  const v = f.get(i);
+  switch (f.kind) {
+    case "filing":
+      return FILING_LABELS[v as FilingStatus];
+    case "payment":
+      return PAYMENT_LABELS[v as TaxPaymentMode];
+    case "yesno":
+      return v ? "Yes" : "No";
+    default:
+      return v as number | null;
+  }
+}
+
+/**
+ * The Inputs sheet doubles as a settings file: the planner's "Import settings" reads it back (see readInputs.ts).
+ * Yellow cells are meant to be edited; the Field ID column is how the importer recognizes each row.
+ */
 function addInputs(wb: Workbook, i: PlannerInputs) {
   const ws = wb.addWorksheet("Inputs");
-  ws.columns = [{ width: 46 }, { width: 28 }, { width: 60 }];
-  ws.addRow(["Input", "Value", "Notes"]);
-  styleHeader(ws.getRow(1));
-  const add = (label: string, value: string | number, fmt?: string, note = "") => {
-    const r = ws.addRow([label, value, note]);
-    if (fmt && typeof value === "number") r.getCell(2).numFmt = fmt;
-    r.getCell(2).alignment = { horizontal: "right" };
-  };
-  add("Birth year", i.birthYear);
-  add("Current age", i.currentAge);
-  add("Plan starts in tax year", i.birthYear + i.currentAge);
-  add("Filing status", i.filingStatus === "mfj" ? "Married filing jointly" : "Single");
-  if (i.filingStatus === "mfj") add("Spouse birth year", i.spouseBirthYear);
-  add("State income tax rate", i.stateTaxRate, PCT);
-  add("Traditional IRA balance", i.tradIraBalance, USD);
-  add("After-tax basis in Traditional IRAs", i.tradIraBasis, USD);
-  add("Roth IRA balance", i.rothBalance, USD);
-  add("Outside (taxable) account balance", i.outsideBalance, USD);
-  add("How conversion taxes are paid", payLabel[i.paymentMode]);
-  add("Annual wages (today's $)", i.wagesAnnual, USD);
-  add("Retirement age", i.retirementAge);
-  add("Social Security, household per year (today's $)", i.socialSecurityAnnual, USD);
-  add("Social Security start age", i.socialSecurityStartAge);
-  add("Start converting at age", i.conversionStartAge);
-  add("Last conversion age", i.lastConversionAge);
-  add("Estimated lifespan (wealth evaluated at age)", i.lifespan);
-  add("Investment return (nominal)", i.investmentReturn, PCT);
-  add("Inflation", i.inflation, PCT);
-  add("Tax drag on outside account", i.outsideTaxDrag, PCT);
-  add("ACA marketplace insurance before Medicare", i.aca.enabled ? "Yes" : "No");
-  if (i.aca.enabled) {
-    add("ACA benchmark premium per year (today's $)", i.aca.benchmarkPremium, USD);
-    add("ACA premium growth", i.aca.premiumGrowth, PCT);
-  }
-  add("MAGI last year (IRMAA look-back)", i.priorMagi1 ?? "estimated", USD);
-  add("MAGI two years ago (IRMAA look-back)", i.priorMagi2 ?? "estimated", USD);
-  add("Number of heirs", i.heirs.count);
-  add("Each heir's other taxable income (today's $)", i.heirs.otherIncome, USD);
-  add("Heirs' state tax rate", i.heirs.stateTaxRate, PCT);
+  ws.columns = [{ width: 46 }, { width: 32 }, { width: 44 }, { width: 24 }, { width: 13 }, { width: 20 }];
+  ws.addRow(["Your inputs"]).font = { bold: true, size: 14 };
+  ws.addRow([
+    "To pick up where you left off, choose “Import settings from Excel” in the planner and select this file. You can edit the yellow cells first. Leave the Field ID column unchanged.",
+  ]).font = { italic: true };
+  ws.addRow([]);
+  const head = ws.addRow(["Input", "Value", "Notes", "Field ID (do not edit)"]);
+  styleHeader(head);
 
-  if (i.incomeStreams.length) {
-    ws.addRow([]);
-    const h = ws.addRow(["Other income", "Amount / year", "Type · ages · inflation-adjusted"]);
-    styleHeader(h);
-    for (const s of i.incomeStreams) {
-      const r = ws.addRow([s.label, s.annualAmount, `${kindLabel[s.kind]} · ages ${s.startAge}–${s.endAge} · ${s.inflationAdjusted ? "inflation-adjusted" : "fixed"}`]);
-      r.getCell(2).numFmt = USD;
-    }
+  for (const f of INPUT_FIELDS) {
+    const r = ws.addRow([f.label, displayValue(f, i), f.note, f.key]);
+    const v = r.getCell(2);
+    v.fill = EDIT_FILL;
+    v.alignment = { horizontal: "right" };
+    const fmt = FIELD_FMT[f.kind];
+    if (fmt) v.numFmt = fmt;
+    if (f.kind === "filing") v.dataValidation = listValidation(Object.values(FILING_LABELS));
+    if (f.kind === "payment") v.dataValidation = listValidation(Object.values(PAYMENT_LABELS));
+    if (f.kind === "yesno") v.dataValidation = listValidation(YES_NO);
+    r.getCell(3).alignment = { wrapText: true, vertical: "top" };
+    r.getCell(4).font = { color: GREY, size: 9 };
   }
-  ws.views = [{ state: "frozen", ySplit: 1 }];
+  const derived = ws.addRow(["Plan starts in tax year", i.birthYear + i.currentAge, "Calculated from birth year and current age (not imported)"]);
+  derived.font = { italic: true, color: GREY };
+
+  ws.addRow([]);
+  ws.addRow(["Use one yellow row per extra income source. Clear a row to remove it; the list replaces the planner's list on import."]).font = { italic: true };
+  const ih = ws.addRow(["Other income: description", "Type", "Amount / year (today's $)", "From age", "Through age", "Inflation-adjusted?"]);
+  styleHeader(ih);
+  const kinds = Object.values(KIND_LABELS);
+  for (let n = 0; n < i.incomeStreams.length + SPARE_INCOME_ROWS; n++) {
+    const s = i.incomeStreams[n];
+    const r = ws.addRow(s ? [s.label, KIND_LABELS[s.kind], s.annualAmount, s.startAge, s.endAge, s.inflationAdjusted ? "Yes" : "No"] : []);
+    for (let c = 1; c <= 6; c++) r.getCell(c).fill = EDIT_FILL;
+    r.getCell(2).dataValidation = listValidation(kinds);
+    r.getCell(3).numFmt = USD;
+    r.getCell(6).dataValidation = listValidation(YES_NO);
+  }
+  ws.views = [{ state: "frozen", ySplit: head.number }];
 }
 
 function comparisonBlock(ws: Worksheet, title: string, scenarios: ScenarioResult[], views: Map<string, View>, endAge: number, recId: string, startRow: number): number {
@@ -162,7 +183,7 @@ function addSummary(wb: Workbook, i: PlannerInputs, out: PlannerOutput) {
   ws.addRow([]);
   ws.addRow(["Sheets in this workbook"]).font = { bold: true };
   for (const t of [
-    "Inputs: every assumption you entered",
+    "Inputs: every assumption you entered. Edit the yellow cells if you like, then use \u201cImport settings from Excel\u201d in the planner to continue where you left off",
     "Comparison: all strategies side by side (future and today's dollars)",
     "One sheet per strategy: year-by-year results (Total cost column is a live formula)",
     "Calculation detail: the full step-by-step math for every year of every strategy, for review and testing",
