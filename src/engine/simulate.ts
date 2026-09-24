@@ -3,7 +3,8 @@ import { heirsTaxPV } from "./heirs";
 import { requiredMinimumDistribution } from "./rmd";
 import { bracketTop, computeFederal, inflationFactor, type FederalResult } from "./tax";
 import { EARLY_WITHDRAWAL_PENALTY, MEDICARE_AGE, PENALTY_FREE_AGE } from "./taxData";
-import type { PlannerInputs, Plan, Target, YearRow } from "./types";
+import { buildYearTrace } from "./trace";
+import type { PlannerInputs, Plan, Target, TraceSection, YearRow } from "./types";
 
 /** Scenario-independent facts about each year. */
 export interface YearData {
@@ -60,6 +61,8 @@ export interface SimOptions {
   state?: SimState;
   /** If given, receives a copy of the state at the start of each year (used by the optimizer). */
   snapshots?: SimState[];
+  /** If set, the outcome includes a full calculation trace for this year index. */
+  traceK?: number;
 }
 
 export interface SimOutcome {
@@ -67,6 +70,7 @@ export interface SimOutcome {
   heirsTax: number;
   legacy: number;
   rows: YearRow[];
+  trace?: TraceSection[];
 }
 
 export const cloneState = (s: SimState): SimState => ({ ...s });
@@ -212,9 +216,13 @@ function resolveConversion(target: Target, cap: number, r: Resolve): number {
 }
 
 /** Advance one year, mutating `s`. Returns a detail row when requested. */
-function stepYear(s: SimState, yd: YearData, target: Target, cap: number, inputs: PlannerInputs, base: Baseline, detail: boolean): YearRow | null {
+function stepYear(
+  s: SimState, yd: YearData, target: Target, cap: number, inputs: PlannerInputs, base: Baseline, detail: boolean,
+  sink?: { trace?: TraceSection[] },
+): YearRow | null {
   const { age, k } = yd;
   const status = inputs.filingStatus;
+  const pre = sink ? { trad: s.trad, basis: s.basis, roth: s.roth, outside: s.outside } : null;
   const fraction = s.trad > 0 ? Math.min(1, Math.max(0, 1 - s.basis / s.trad)) : 0;
   const rmd = requiredMinimumDistribution(s.trad, age, inputs.birthYear);
   const ordBase = yd.ordinary + rmd * fraction;
@@ -238,7 +246,8 @@ function stepYear(s: SimState, yd: YearData, target: Target, cap: number, inputs
   const f = fedAt(conv);
   const st = stateTax(inputs, f);
   const irm = irmaaSurcharge(s.m2, status, yd.factor, yd.medicare);
-  const acaLost = yd.acaOn ? Math.max(0, base.acaSubsidy[k] - acaSubsidy(f.acaMagi, yd.householdSize, yd.factor, yd.benchmark)) : 0;
+  const subsidy = yd.acaOn ? acaSubsidy(f.acaMagi, yd.householdSize, yd.factor, yd.benchmark) : 0;
+  const acaLost = yd.acaOn ? Math.max(0, base.acaSubsidy[k] - subsidy) : 0;
   const extra = f.tax + st + f.niit + irm + acaLost - base.cost[k];
 
   // Funding the extra cost of IRA distributions.
@@ -279,6 +288,18 @@ function stepYear(s: SimState, yd: YearData, target: Target, cap: number, inputs
     };
   }
 
+  if (sink && pre && row) {
+    sink.trace = buildYearTrace({
+      inputs, yd, pre, target, cap, inWindow, windowYearsLeft: inputs.lastConversionAge - age + 1,
+      fraction, rmd, maxC, conv, f, stateTax: st, irmaa: irm, lagMagi: s.m2,
+      subsidy, subsidyBase: base.acaSubsidy[k], acaLost, baseCost: base.cost[k], extra,
+      fromOutside, shortfall, drawn, withheldTax, penalty, uncovered, outsideNow,
+      post: { trad: tradNew, roth: rothNew, outside: outsideNew },
+      outsideGrowth: outsideNow > 0 ? r - inputs.outsideTaxDrag : r,
+      totalCost, marginalAllIn: row.marginalAllIn,
+    });
+  }
+
   s.basis = Math.max(0, s.basis - (rmd + conv) * (1 - fraction));
   s.trad = tradNew;
   s.roth = rothNew;
@@ -295,13 +316,15 @@ function stepYear(s: SimState, yd: YearData, target: Target, cap: number, inputs
 export function simulate(inputs: PlannerInputs, base: Baseline, plan: Plan, opts: SimOptions = {}): SimOutcome {
   const s = opts.state ? cloneState(opts.state) : initialState(inputs, base);
   const rows: YearRow[] = [];
+  const sink: { trace?: TraceSection[] } = {};
   const none: Target = { kind: "none" };
   for (let k = opts.fromK ?? 0; k < base.years.length; k++) {
     if (opts.snapshots) opts.snapshots[k] = cloneState(s);
-    const row = stepYear(s, base.years[k], plan.targets[k] ?? none, plan.cap, inputs, base, !!opts.detail);
+    const tracing = opts.traceK === k;
+    const row = stepYear(s, base.years[k], plan.targets[k] ?? none, plan.cap, inputs, base, !!opts.detail || tracing, tracing ? sink : undefined);
     if (row) rows.push(row);
   }
   const last = base.years[base.years.length - 1];
   const heirsTax = heirsTaxPV(s.trad, last.year, inputs.investmentReturn, inputs.inflation, inputs.heirs);
-  return { state: s, heirsTax, legacy: s.roth + s.outside + s.trad - heirsTax, rows };
+  return { state: s, heirsTax, legacy: s.roth + s.outside + s.trad - heirsTax, rows, trace: sink.trace };
 }

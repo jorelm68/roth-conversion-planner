@@ -77,8 +77,14 @@ export interface FederalResult {
   /** MAGI for ACA (adds untaxed Social Security). */
   acaMagi: number;
   deduction: number;
+  standardDeduction: number; // standard + additional 65+ amounts
+  seniorDeduction: number; // OBBBA senior deduction after phase-out
+  provisionalIncome: number; // for Social Security taxation
   taxableIncome: number;
+  preferentialTaxable: number;
   ordinaryTaxable: number;
+  ordinaryTax: number;
+  preferentialTax: number;
   tax: number;
   niit: number;
   marginal: number;
@@ -88,11 +94,13 @@ export function computeFederal(i: FederalInput): FederalResult {
   const taxableSS = taxableSocialSecurity(i.ss, i.ordinary + i.preferential, i.taxExempt, i.status);
   const agi = i.ordinary + i.preferential + taxableSS;
 
-  let deduction = (STANDARD_DEDUCTION[i.status] + ADDITIONAL_STANDARD_DEDUCTION_65[i.status] * i.seniors) * i.factor;
+  const standardDeduction = (STANDARD_DEDUCTION[i.status] + ADDITIONAL_STANDARD_DEDUCTION_65[i.status] * i.seniors) * i.factor;
+  let seniorDeduction = 0;
   if (i.seniors > 0 && i.year <= SENIOR_DEDUCTION.lastYear) {
     const over = Math.max(0, agi - SENIOR_DEDUCTION.threshold[i.status]);
-    deduction += Math.max(0, SENIOR_DEDUCTION.amount * i.seniors - SENIOR_DEDUCTION.phaseoutRate * over);
+    seniorDeduction = Math.max(0, SENIOR_DEDUCTION.amount * i.seniors - SENIOR_DEDUCTION.phaseoutRate * over);
   }
+  const deduction = standardDeduction + seniorDeduction;
 
   const taxableIncome = Math.max(0, agi - deduction);
   const prefPart = Math.min(i.preferential, taxableIncome);
@@ -105,7 +113,8 @@ export function computeFederal(i: FederalInput): FederalResult {
   const top = ordinaryTaxable + prefPart;
   const at15 = Math.max(0, Math.min(top, fifteenTo) - Math.max(ordinaryTaxable, zeroTo));
   const at20 = Math.max(0, top - Math.max(ordinaryTaxable, fifteenTo));
-  const tax = ordTax + at15 * 0.15 + at20 * 0.2;
+  const prefTax = at15 * 0.15 + at20 * 0.2;
+  const tax = ordTax + prefTax;
 
   const magi = agi + i.taxExempt;
   const nii = i.interest + i.preferential;
@@ -117,8 +126,14 @@ export function computeFederal(i: FederalInput): FederalResult {
     magi,
     acaMagi: magi + (i.ss - taxableSS),
     deduction,
+    standardDeduction,
+    seniorDeduction,
+    provisionalIncome: i.ordinary + i.preferential + i.taxExempt + 0.5 * i.ss,
     taxableIncome,
+    preferentialTaxable: prefPart,
     ordinaryTaxable,
+    ordinaryTax: ordTax,
+    preferentialTax: prefTax,
     tax,
     niit,
     marginal: marginalRate(ordinaryTaxable, i.status, i.factor),

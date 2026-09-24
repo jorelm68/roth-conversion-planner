@@ -116,7 +116,7 @@ export function InputForm({ inputs, onChange, onReset }: Props) {
           <div className="stream" key={s.id}>
             <label className="field">
               <span className="field-label">Description</span>
-              <input type="text" value={s.label} onChange={(e) => setStream(s.id, { label: e.target.value })} />
+              <input type="text" autoComplete="off" spellCheck={false} value={s.label} onChange={(e) => setStream(s.id, { label: e.target.value })} />
             </label>
             <label className="field">
               <span className="field-label">Type</span>

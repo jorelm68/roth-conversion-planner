@@ -1,13 +1,21 @@
 import { ACA, IRMAA, type FilingStatus } from "./taxData";
 
-/** Annual IRMAA surcharge for a premium year, given MAGI from two years earlier. */
-export function irmaaSurcharge(lagMagi: number, status: FilingStatus, factor: number, enrollees: number): number {
-  if (enrollees <= 0) return 0;
+/** IRMAA tier (0 = none, 1-5) for MAGI from two years before the premium year. */
+export function irmaaTier(lagMagi: number, status: FilingStatus, factor: number): number {
   const th = IRMAA.thresholds[status];
   let tier = 0;
   for (let i = 0; i < th.length; i++) if (lagMagi > th[i] * factor) tier = i + 1;
-  if (tier === 0) return 0;
-  return IRMAA.monthlySurcharge[tier - 1] * 12 * factor * enrollees;
+  return tier;
+}
+
+/** Annual surcharge per Medicare enrollee for a tier. */
+export const irmaaSurchargePerPerson = (tier: number, factor: number) =>
+  tier === 0 ? 0 : IRMAA.monthlySurcharge[tier - 1] * 12 * factor;
+
+/** Annual IRMAA surcharge for a premium year, given MAGI from two years earlier. */
+export function irmaaSurcharge(lagMagi: number, status: FilingStatus, factor: number, enrollees: number): number {
+  if (enrollees <= 0) return 0;
+  return irmaaSurchargePerPerson(irmaaTier(lagMagi, status, factor), factor) * enrollees;
 }
 
 /** MAGI ceiling for IRMAA threshold #tier (0-based) in the premium year. */
