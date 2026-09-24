@@ -150,7 +150,9 @@ const signed = (n: number) => `${n >= 0 ? "+" : "−"}${money(Math.abs(n))}`;
 
 function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs: PlannerInputs }) {
   const [openK, setOpenK] = useState<number | null>(null);
-  useEffect(() => setOpenK(null), [s.id]);
+  useEffect(() => {
+    setOpenK(null);
+  }, [s.id]);
   const f = (r: YearRow, v: number) => (real ? v / Math.pow(1 + inputs.inflation, r.k) : v);
   const bars = s.rows.map((r) => ({
     x: r.age,
@@ -268,7 +270,11 @@ function YearTraceView({ inputs, scenario, k, onClose, onMove }: { inputs: Plann
   const ks = scenario.rows.map((r) => r.k);
   const idx = ks.indexOf(k);
   const ref = useRef<HTMLElement>(null);
-  useEffect(() => ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }), [k]);
+  // Effects must return nothing or a cleanup function. scrollIntoView returns a Promise in newer
+  // browsers, so it must not be the arrow's implicit return value (React would call it on cleanup).
+  useEffect(() => {
+    ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [k]);
 
   return (
     <section className="trace" ref={ref} aria-label={`Calculation for age ${row.age}`}>
@@ -289,11 +295,16 @@ function YearTraceView({ inputs, scenario, k, onClose, onMove }: { inputs: Plann
         {sections.map((sec) => (
           <table key={sec.title} className="trace-table">
             <caption>{sec.title}</caption>
+            <colgroup>
+              <col className="c-label" />
+              <col className="c-value" />
+              <col className="c-how" />
+            </colgroup>
             <tbody>
               {sec.lines.map((l, i) => (
                 <tr key={i} className={l.key && KEY_LINES.has(l.key) ? "key" : ""}>
                   <th scope="row">{l.label}</th>
-                  <td>{fmtLine(l)}</td>
+                  <td className={l.fmt === "text" ? "text" : undefined}>{fmtLine(l)}</td>
                   <td className="how">{l.note}</td>
                 </tr>
               ))}

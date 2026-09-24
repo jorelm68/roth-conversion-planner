@@ -135,18 +135,37 @@ footer { margin-top: 32px; color: var(--muted); font-size: 13px; max-width: 900p
 .years tbody tr:hover td { background: var(--accent-soft); }
 .years tr.open td { background: var(--accent-soft); font-weight: 600; }
 
-.trace { background: var(--card); border: 2px solid var(--accent); border-radius: 12px; padding: 16px; margin: 12px 0 20px; }
+.trace { min-width: 0; background: var(--card); border: 2px solid var(--accent); border-radius: 12px; padding: 16px; margin: 12px 0 20px; }
 .trace-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: flex-start; }
 .trace-head h3 { color: var(--text); font-size: 16px; margin: 0; }
 .trace-nav { display: flex; gap: 8px; flex-wrap: wrap; }
-.trace-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 16px; margin-top: 12px; align-items: start; }
-.trace-table { width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+/* min(100%, …) lets a column shrink below 420px on narrow screens instead of overflowing the page. */
+.trace-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; margin-top: 12px; align-items: start; }
+.trace-sections > * { min-width: 0; }
+/* Fixed layout: long values wrap inside their column instead of widening the table past its box. */
+.trace-table { width: 100%; table-layout: fixed; border: 1px solid var(--line); border-radius: 8px; }
+.trace-table col.c-label { width: 40%; }
+.trace-table col.c-value { width: 24%; }
+.trace-table col.c-how { width: 36%; }
+.trace-table th, .trace-table td { overflow-wrap: anywhere; }
+.trace-table td.text { white-space: normal; text-align: left; }
 .trace-table caption { text-align: left; font-weight: 700; padding: 8px 12px; background: var(--accent-soft); border-radius: 8px 8px 0 0; }
 .trace-table th[scope="row"] { text-align: left; font-weight: 500; white-space: normal; }
 .trace-table td { font-weight: 600; }
-.trace-table td.how { text-align: left; font-weight: 400; color: var(--muted); white-space: normal; font-size: 12px; min-width: 160px; }
+.trace-table td.how { text-align: left; font-weight: 400; color: var(--muted); white-space: normal; font-size: 12px; }
 .trace-table tr.key th, .trace-table tr.key td { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); font-weight: 700; }
 @media (max-width: 820px) { .trace-sections { grid-template-columns: 1fr; } }
+/* Phones: stack each line (label and value on one row, the explanation underneath) so large amounts never spill. */
+@media (max-width: 560px) {
+  .trace { padding: 12px; }
+  .trace-table, .trace-table tbody, .trace-table caption { display: block; }
+  .trace-table colgroup { display: none; }
+  .trace-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; border-bottom: 1px solid var(--line); padding: 6px 10px; }
+  .trace-table th, .trace-table td { padding: 0; border-bottom: 0; }
+  .trace-table td.text { grid-column: 1 / -1; }
+  .trace-table td.how { grid-column: 1 / -1; padding-top: 2px; }
+  .trace-table td.how:empty { display: none; }
+}
 
 .import-bar { margin-bottom: 16px; border-style: dashed; }
 .import-bar.dragging { border-color: var(--accent); background: var(--accent-soft); }
