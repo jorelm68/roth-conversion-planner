@@ -147,3 +147,13 @@ footer { margin-top: 32px; color: var(--muted); font-size: 13px; max-width: 900p
 .trace-table td.how { text-align: left; font-weight: 400; color: var(--muted); white-space: normal; font-size: 12px; min-width: 160px; }
 .trace-table tr.key th, .trace-table tr.key td { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); font-weight: 700; }
 @media (max-width: 820px) { .trace-sections { grid-template-columns: 1fr; } }
+
+.import-bar { margin-bottom: 16px; border-style: dashed; }
+.import-bar.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.import-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.import-row h2 { margin-bottom: 4px; }
+.import-row .note { margin: 0; max-width: 760px; }
+.import-bar .error { margin-top: 12px; }
+.import-result { margin-top: 12px; background: var(--accent-soft); border-radius: 8px; padding: 8px 12px; font-size: 14px; }
+.import-result p { margin: 4px 0; }
+.import-result ul { margin: 4px 0 4px 20px; padding: 0; }
