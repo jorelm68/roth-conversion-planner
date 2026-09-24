@@ -1,5 +1,7 @@
+import { heirsTaxSchedule, type HeirSchedule } from "./heirs";
 import { buildBaseline, simulate, type Baseline, type SimState } from "./simulate";
-import type { PlannerInputs, Plan, ScenarioResult, Target, TraceSection } from "./types";
+import type { TraceParams } from "./trace";
+import type { PlannerInputs, Plan, ScenarioResult, Target, TraceSection, YearRow } from "./types";
 
 export type Progress = (fraction: number, label: string) => void;
 
@@ -201,4 +203,38 @@ export function runPlanner(inputs: PlannerInputs, onProgress?: Progress): Planne
 export function explainYear(inputs: PlannerInputs, plan: Plan, k: number): TraceSection[] {
   const base = buildBaseline(inputs);
   return simulate(inputs, base, plan, { traceK: k }).trace ?? [];
+}
+
+export interface PlanDetail {
+  /** Every year's intermediate values, in plan order. */
+  years: TraceParams[];
+  rows: YearRow[];
+  heirs: HeirSchedule;
+  trad: number;
+  roth: number;
+  outside: number;
+  legacy: number;
+  legacyReal: number;
+  /** Years from the start of the plan to the end of the lifespan year (used to express results in today's dollars). */
+  yearsToEnd: number;
+}
+
+/** Re-runs a scenario and returns all of its intermediate values, for the "How it's calculated" page. */
+export function planDetail(inputs: PlannerInputs, plan: Plan): PlanDetail {
+  const base = buildBaseline(inputs);
+  const years: TraceParams[] = [];
+  const o = simulate(inputs, base, plan, { collect: years, detail: true });
+  const last = base.years[base.years.length - 1];
+  const heirs = heirsTaxSchedule(o.state.trad, last.year, inputs.investmentReturn, inputs.inflation, inputs.heirs);
+  return {
+    years,
+    rows: o.rows,
+    heirs,
+    trad: o.state.trad,
+    roth: o.state.roth,
+    outside: o.state.outside,
+    legacy: o.legacy,
+    legacyReal: o.legacy / Math.pow(1 + inputs.inflation, last.k),
+    yearsToEnd: last.k,
+  };
 }

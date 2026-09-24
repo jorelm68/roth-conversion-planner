@@ -12,6 +12,7 @@
 | **No third parties** | No analytics, error-reporting, fonts or CDNs. Nothing is loaded from another domain. |
 | **Automated guard** | `src/__tests__/privacy.test.ts` fails the build's test run if anyone adds a network call, storage API, external URL, analytics dependency, or weakens the CSP. |
 | **Excel export** | Built in memory with `exceljs` from a Blob and saved through the browser's download mechanism. Nothing is uploaded. |
+| **"How it's calculated" view** | Opens in the same page, switched by the URL hash `#how-it-works` (which never contains your data), so no page download is needed and your numbers stay in memory. A separate route was deliberately not used: route changes would need a network fetch that the CSP blocks. |
 | **Excel import** | The file you pick (or drop) is read with the browser's File API and parsed in memory. It is never uploaded or stored; only the settings are copied into the form. |
 
 ## What the hosting provider can still see

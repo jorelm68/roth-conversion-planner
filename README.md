@@ -5,6 +5,7 @@ A browser-only tool that finds the year-by-year Traditional → Roth IRA convers
 (no conversions, fill the 12/22/24/32% bracket, stay under IRMAA, convert everything now, ...).
 
 * **Excel report + year-by-year audit:** download a workbook with every input, all strategies side by side, a sheet per strategy and a full "Calculation detail" sheet; click any year on screen to see each step of that year's math.
+* **How it's calculated:** a full-page view (the "How it's calculated" button, or `/#how-it-works`) that walks through every formula with your numbers: each step shows the rule, the rule with your values plugged in, and the result, marked ✓ where it matches the planner's own number. It also covers how the numbers change year to year, the heirs' tax, the strategy search, and the tax-law figures used. Content is built in `src/methodology/` and tested against the engine.
 * **Pick up where you left off:** "Import settings from Excel" reads the Inputs sheet of a downloaded report (you can edit its yellow cells in Excel first) and restores every setting.
 * **No server, no storage.** Static Next.js export; the math runs in a Web Worker in your browser. Inputs are never sent or saved.
 * **Everything is an input:** birth year, age, filing status, balances, other income streams, Social Security, return, inflation,
