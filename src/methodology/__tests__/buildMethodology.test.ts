@@ -30,6 +30,38 @@ const CASES: [string, PlannerInputs][] = [
     }),
   ],
   ["young, tax withheld from the IRA (penalty years)", base({ birthYear: 1976, currentAge: 50, conversionStartAge: 50, retirementAge: 50, paymentMode: "fromIra", wagesAnnual: 0 })],
+  [
+    "retiring partner: QBI income, $30k/month of spending, outside then IRA, future rate increase",
+    base({
+      filingStatus: "mfj",
+      birthYear: 1961,
+      currentAge: 65,
+      spouseBirthYear: 1963,
+      retirementAge: 65,
+      conversionStartAge: 65,
+      tradIraBalance: 3_000_000,
+      rothBalance: 200_000,
+      outsideBalance: 400_000,
+      socialSecurityAnnual: 60_000,
+      outsideReturn: 0.035,
+      paymentMode: "limited",
+      expenses: { enabled: true, monthly: 30_000 },
+      taxIncrease: { enabled: true, startYear: 2029, mode: "relative", amount: 0.2, threshold: 400_000 },
+      incomeStreams: [
+        { id: "p", label: "Partner retirement", kind: "ordinary", annualAmount: 240_000, startAge: 65, endAge: 80, inflationAdjusted: false, qbi: true },
+        { id: "d", label: "Dividends", kind: "qualified", annualAmount: 20_000, startAge: 65, endAge: 95, inflationAdjusted: true },
+      ],
+    }),
+  ],
+  [
+    "young saver: spending with tax withheld from the IRA (penalty on spending withdrawals), points increase",
+    base({
+      birthYear: 1976, currentAge: 50, conversionStartAge: 50, retirementAge: 50, paymentMode: "fromIra", outsideBalance: 40_000, rothBalance: 30_000,
+      expenses: { enabled: true, monthly: 4_000 },
+      taxIncrease: { enabled: true, startYear: 2027, mode: "points", amount: 0.05, threshold: 0 },
+    }),
+  ],
+  ["spending in unlimited mode", base({ expenses: { enabled: true, monthly: 7_000 } })],
 ];
 
 /** Every step whose planner value is known must equal the value recomputed from the displayed formula. */
@@ -80,6 +112,22 @@ describe("How-it's-calculated page content", () => {
     const yd = planDetail(young, y.plan);
     const pen = yearBlocks(yd.years[0], yd.rows[0]).find((b) => b.id === "cost")!.steps.find((st) => st.label === "Early-withdrawal penalty")!;
     expect(pen.value as number).toBeGreaterThan(0);
+  });
+
+  it("covers QBI, the rate increase and the cash-flow step when they apply", () => {
+    const [, partner] = CASES[3];
+    const s = runPlanner(partner).scenarios.find((x) => x.id === "none")!;
+    const d = planDetail(partner, s.plan);
+    const k = d.rows.findIndex((r) => r.spendFromTrad > 0 && r.year >= 2029);
+    const blocks = yearBlocks(d.years[k], d.rows[k]);
+    expect(blocks.map((b) => b.id)).toContain("cashflow");
+    const steps = blocks.flatMap((b) => b.steps.map((st) => st.label));
+    expect(steps).toContain("QBI deduction (§199A)");
+    expect(steps).toContain("What-if rate increase");
+    const [, young] = CASES[4];
+    const y = runPlanner(young).scenarios.find((x) => x.id === "none")!;
+    expect(y.totals.spendFromTrad).toBeGreaterThan(0);
+    expect(y.totals.penalty).toBeGreaterThan(0);
   });
 
   it("builds the tax-law reference tables", () => {

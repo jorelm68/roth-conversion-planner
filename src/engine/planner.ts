@@ -1,5 +1,5 @@
 import { heirsTaxSchedule, type HeirSchedule } from "./heirs";
-import { buildBaseline, simulate, type Baseline, type SimState } from "./simulate";
+import { buildBaseline, heirsHike, simulate, type Baseline, type SimState } from "./simulate";
 import type { TraceParams } from "./trace";
 import type { PlannerInputs, Plan, ScenarioResult, Target, TraceSection, YearRow } from "./types";
 
@@ -22,6 +22,13 @@ export function validateInputs(i: PlannerInputs): string[] {
   if (i.conversionStartAge > i.lastConversionAge) errors.push("Conversion start age must not be after the last conversion age.");
   if (i.tradIraBalance < 0 || i.rothBalance < 0) errors.push("Balances cannot be negative.");
   if (i.investmentReturn < -0.5 || i.investmentReturn > 0.5) errors.push("Investment return looks unrealistic.");
+  if (i.outsideReturn < -0.5 || i.outsideReturn > 0.5) errors.push("Outside-account return looks unrealistic.");
+  if (i.expenses.enabled && !(i.expenses.monthly >= 0)) errors.push("Monthly living expenses cannot be negative.");
+  if (i.taxIncrease.enabled) {
+    if (!(i.taxIncrease.startYear >= 2026 && i.taxIncrease.startYear <= 2200)) errors.push("Enter a valid year for the tax-rate increase (2026 or later).");
+    if (i.taxIncrease.amount < 0 || i.taxIncrease.amount > (i.taxIncrease.mode === "points" ? 0.5 : 2)) errors.push("The tax-rate increase looks unrealistic.");
+    if (i.taxIncrease.threshold < 0) errors.push("The income level for the tax-rate increase cannot be negative.");
+  }
   return errors;
 }
 
@@ -90,7 +97,10 @@ function toResult(i: PlannerInputs, base: Baseline, id: string, name: string, de
   const o = simulate(i, base, plan, { detail: true });
   const s = o.state;
   const last = base.years[base.years.length - 1];
-  const totals = { federalTax: s.fed, stateTax: s.st, niit: s.niit, irmaa: s.irm, acaSubsidyLost: s.aca, penalty: s.pen, converted: s.conv, rmds: s.rmds };
+  const totals = {
+    federalTax: s.fed, stateTax: s.st, niit: s.niit, irmaa: s.irm, acaSubsidyLost: s.aca, penalty: s.pen, converted: s.conv, rmds: s.rmds,
+    qbiDeduction: s.qbi, taxIncrease: s.hike, spendFromTrad: s.spendTrad, spendFromRoth: s.spendRoth,
+  };
   return {
     id, name, description, cap: plan.cap, totals,
     ownerCost: s.fed + s.st + s.niit + s.irm + s.aca + s.pen,
@@ -101,6 +111,7 @@ function toResult(i: PlannerInputs, base: Baseline, id: string, name: string, de
     legacy: o.legacy,
     legacyReal: o.legacy / Math.pow(1 + i.inflation, last.k),
     inflationFactorAtEnd: Math.pow(1 + i.inflation, last.k),
+    outsideNegativeAge: s.negAge >= 0 ? s.negAge : null,
     plan,
     rows: o.rows,
   };
@@ -193,7 +204,31 @@ export function runPlanner(inputs: PlannerInputs, onProgress?: Progress): Planne
   }
 
   const recommended = scenarios.slice().sort((a, b) => b.legacy - a.legacy || a.peakBracket - b.peakBracket)[0];
+  warnings.push(...cashWarnings(inputs, recommended));
   return { scenarios, recommendedId: recommended.id, warnings };
+}
+
+const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+/** Explains when the recommended strategy runs the outside account below zero. */
+function cashWarnings(i: PlannerInputs, s: ScenarioResult): string[] {
+  const age = s.outsideNegativeAge;
+  if (age === null) return [];
+  const unfunded = s.rows.reduce((a, r) => a + r.unfunded, 0);
+  if (i.expenses.enabled && i.paymentMode !== "unlimited" && unfunded > 1) {
+    const first = s.rows.find((r) => r.unfunded > 1)!;
+    return [
+      `With the recommended strategy every account is empty by age ${first.age}: ${usd0(unfunded)} of living expenses and taxes (in future dollars) cannot be paid from these accounts. The outside balance is shown as negative from then on.`,
+    ];
+  }
+  if (i.paymentMode === "unlimited") {
+    return [
+      i.expenses.enabled
+        ? `With the recommended strategy the outside account runs out at age ${age}. From then on living expenses and taxes are assumed to come from other savings, shown as a negative outside balance (extra funds needed). To draw on your IRAs instead, choose “Pay from my outside account balance, then from the IRA”.`
+        : `With the recommended strategy the outside account goes below zero at age ${age}: conversion taxes beyond it are assumed to come from other savings (shown as a negative balance).`,
+    ];
+  }
+  return [];
 }
 
 /**
@@ -225,7 +260,7 @@ export function planDetail(inputs: PlannerInputs, plan: Plan): PlanDetail {
   const years: TraceParams[] = [];
   const o = simulate(inputs, base, plan, { collect: years, detail: true });
   const last = base.years[base.years.length - 1];
-  const heirs = heirsTaxSchedule(o.state.trad, last.year, inputs.investmentReturn, inputs.inflation, inputs.heirs);
+  const heirs = heirsTaxSchedule(o.state.trad, last.year, inputs.investmentReturn, inputs.inflation, inputs.heirs, heirsHike(inputs));
   return {
     years,
     rows: o.rows,

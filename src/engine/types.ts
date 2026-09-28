@@ -19,12 +19,17 @@ export interface IncomeStream {
   endAge: number;
   /** If true the amount grows with inflation; otherwise it is a fixed nominal amount. */
   inflationAdjusted: boolean;
+  /** Qualified business income (IRC §199A). Only counts for "ordinary" streams. */
+  qbi?: boolean;
 }
 
 /**
- * unlimited: conversion tax is paid from other savings (balance may go "negative" = extra funds needed, valued at the investment return).
- * limited:   paid from the outside account until it runs out, then withheld from the IRA.
- * fromIra:   no outside funds; tax is withheld from the converted amount (10% penalty before 59.5).
+ * unlimited: conversion tax (and, with living expenses on, any spending shortfall) is paid from other savings
+ *            (the outside balance may go "negative" = extra funds needed, charged at the outside-account return).
+ * limited:   paid from the outside account until it runs out, then withheld from the IRA. With living expenses on,
+ *            a spending shortfall is then withdrawn from the Traditional IRA, then the Roth.
+ * fromIra:   conversion tax is withheld from the converted amount (10% penalty before 59.5); the outside account
+ *            is used only for living expenses.
  */
 export type TaxPaymentMode = "unlimited" | "limited" | "fromIra";
 
@@ -53,9 +58,25 @@ export interface PlannerInputs {
   /** Effective state income tax rate on income other than Social Security (fraction). */
   stateTaxRate: number;
 
-  investmentReturn: number; // nominal, fraction
+  investmentReturn: number; // nominal, fraction (IRAs)
+  /** Nominal return on the outside (taxable) account, before tax drag. Usually lower than the IRA return. */
+  outsideReturn: number;
   inflation: number; // fraction
   outsideTaxDrag: number; // annual tax drag on the outside account, fraction
+
+  /**
+   * Living expenses. When enabled, all income, taxes and spending flow through the outside account and a
+   * shortfall is covered according to `paymentMode`. When disabled, other income is assumed to cover living
+   * costs and its own taxes (only IRA-related cash flows touch the outside account).
+   */
+  expenses: {
+    enabled: boolean;
+    /** Monthly living expenses in today's dollars; grow with inflation. */
+    monthly: number;
+  };
+
+  /** "What if" tax-rate increase on ordinary income from a future year (also applied to heirs). */
+  taxIncrease: TaxIncrease;
 
   paymentMode: TaxPaymentMode;
 
@@ -80,6 +101,19 @@ export interface PlannerInputs {
     otherIncome: number;
     stateTaxRate: number;
   };
+}
+
+export type TaxIncreaseMode = "relative" | "points";
+
+export interface TaxIncrease {
+  enabled: boolean;
+  /** First tax year with the higher rates. */
+  startYear: number;
+  /** relative: each bracket rate × (1 + amount). points: each bracket rate + amount. */
+  mode: TaxIncreaseMode;
+  amount: number;
+  /** Applies to ordinary taxable income above this amount (2026 dollars, indexed like the brackets). */
+  threshold: number;
 }
 
 /** Symbolic conversion target, resolved each year into a dollar amount. */
@@ -127,6 +161,24 @@ export interface YearRow {
   outsideEnd: number;
   /** Portion of tax paid by withholding from the conversion. */
   withheld: number;
+  /** Qualified business income deduction (§199A). */
+  qbiDeduction: number;
+  /** Extra federal tax from the "what if" rate increase. */
+  taxIncrease: number;
+  /** Cash received this year: wages, other income and Social Security (not IRA money). */
+  cashIncome: number;
+  /** Living expenses this year (0 when living expenses are not modeled). */
+  expenses: number;
+  /** Traditional IRA money withdrawn to pay living expenses (not converted). */
+  spendFromTrad: number;
+  /** Roth IRA money withdrawn to pay living expenses. */
+  spendFromRoth: number;
+  /** Outside account at the start of the year. */
+  outsideStart: number;
+  /** Investment growth credited to (or, if negative, charged on) the outside account. */
+  outsideGrowth: number;
+  /** Spending the accounts could not cover (all accounts empty; limited / fromIra modes only). */
+  unfunded: number;
 }
 
 export interface Totals {
@@ -138,6 +190,10 @@ export interface Totals {
   penalty: number;
   converted: number;
   rmds: number;
+  qbiDeduction: number;
+  taxIncrease: number;
+  spendFromTrad: number;
+  spendFromRoth: number;
 }
 
 export interface ScenarioResult {
@@ -160,6 +216,8 @@ export interface ScenarioResult {
   /** legacy in today's dollars. */
   legacyReal: number;
   inflationFactorAtEnd: number;
+  /** First age at which the outside account is negative (extra funds needed or spending unfunded), or null. */
+  outsideNegativeAge: number | null;
   /** The conversion plan that produced this result (lets the UI re-run any year with a full calculation trace). */
   plan: Plan;
   rows: YearRow[];

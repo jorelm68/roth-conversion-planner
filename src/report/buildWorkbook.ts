@@ -1,6 +1,6 @@
 import type { DataValidation, Workbook, Worksheet } from "exceljs";
-import { explainYear, type FilingStatus, type PlannerInputs, type PlannerOutput, type ScenarioResult, type TaxPaymentMode } from "@/engine";
-import { FILING_LABELS, INPUT_FIELDS, KIND_LABELS, PAYMENT_LABELS, YES_NO, type FieldKind, type InputField } from "./inputFields";
+import { explainYear, type FilingStatus, type PlannerInputs, type PlannerOutput, type ScenarioResult, type TaxIncreaseMode, type TaxPaymentMode } from "@/engine";
+import { FILING_LABELS, HIKE_LABELS, INPUT_FIELDS, KIND_LABELS, PAYMENT_LABELS, YES_NO, type FieldKind, type InputField } from "./inputFields";
 import { viewOf, type View } from "./metrics";
 
 const USD = '"$"#,##0;[Red]-"$"#,##0';
@@ -49,6 +49,8 @@ function displayValue(f: InputField, i: PlannerInputs): string | number | null {
       return PAYMENT_LABELS[v as TaxPaymentMode];
     case "yesno":
       return v ? "Yes" : "No";
+    case "hikeMode":
+      return HIKE_LABELS[v as TaxIncreaseMode];
     default:
       return v as number | null;
   }
@@ -60,7 +62,7 @@ function displayValue(f: InputField, i: PlannerInputs): string | number | null {
  */
 function addInputs(wb: Workbook, i: PlannerInputs) {
   const ws = wb.addWorksheet("Inputs");
-  ws.columns = [{ width: 46 }, { width: 32 }, { width: 44 }, { width: 24 }, { width: 13 }, { width: 20 }];
+  ws.columns = [{ width: 46 }, { width: 32 }, { width: 44 }, { width: 24 }, { width: 13 }, { width: 20 }, { width: 16 }];
   ws.addRow(["Your inputs"]).font = { bold: true, size: 14 };
   ws.addRow([
     "To pick up where you left off, choose “Import settings from Excel” in the planner and select this file. You can edit the yellow cells first. Leave the Field ID column unchanged.",
@@ -79,6 +81,7 @@ function addInputs(wb: Workbook, i: PlannerInputs) {
     if (f.kind === "filing") v.dataValidation = listValidation(Object.values(FILING_LABELS));
     if (f.kind === "payment") v.dataValidation = listValidation(Object.values(PAYMENT_LABELS));
     if (f.kind === "yesno") v.dataValidation = listValidation(YES_NO);
+    if (f.kind === "hikeMode") v.dataValidation = listValidation(Object.values(HIKE_LABELS));
     r.getCell(3).alignment = { wrapText: true, vertical: "top" };
     r.getCell(4).font = { color: GREY, size: 9 };
   }
@@ -87,21 +90,25 @@ function addInputs(wb: Workbook, i: PlannerInputs) {
 
   ws.addRow([]);
   ws.addRow(["Use one yellow row per extra income source. Clear a row to remove it; the list replaces the planner's list on import."]).font = { italic: true };
-  const ih = ws.addRow(["Other income: description", "Type", "Amount / year (today's $)", "From age", "Through age", "Inflation-adjusted?"]);
+  const ih = ws.addRow(["Other income: description", "Type", "Amount / year (today's $)", "From age", "Through age", "Inflation-adjusted?", "QBI (§199A)?"]);
   styleHeader(ih);
   const kinds = Object.values(KIND_LABELS);
   for (let n = 0; n < i.incomeStreams.length + SPARE_INCOME_ROWS; n++) {
     const s = i.incomeStreams[n];
-    const r = ws.addRow(s ? [s.label, KIND_LABELS[s.kind], s.annualAmount, s.startAge, s.endAge, s.inflationAdjusted ? "Yes" : "No"] : []);
-    for (let c = 1; c <= 6; c++) r.getCell(c).fill = EDIT_FILL;
+    const r = ws.addRow(
+      s ? [s.label, KIND_LABELS[s.kind], s.annualAmount, s.startAge, s.endAge, s.inflationAdjusted ? "Yes" : "No", s.kind === "ordinary" && s.qbi ? "Yes" : "No"] : [],
+    );
+    for (let c = 1; c <= 7; c++) r.getCell(c).fill = EDIT_FILL;
     r.getCell(2).dataValidation = listValidation(kinds);
     r.getCell(3).numFmt = USD;
     r.getCell(6).dataValidation = listValidation(YES_NO);
+    r.getCell(7).dataValidation = listValidation(YES_NO);
   }
   ws.views = [{ state: "frozen", ySplit: head.number }];
 }
 
-function comparisonBlock(ws: Worksheet, title: string, scenarios: ScenarioResult[], views: Map<string, View>, endAge: number, recId: string, startRow: number): number {
+function comparisonBlock(ws: Worksheet, title: string, scenarios: ScenarioResult[], views: Map<string, View>, i: PlannerInputs, recId: string, startRow: number): number {
+  const endAge = i.lifespan;
   let row = startRow;
   ws.getCell(row, 1).value = title;
   ws.getCell(row, 1).font = { bold: true, size: 13 };
@@ -116,7 +123,16 @@ function comparisonBlock(ws: Worksheet, title: string, scenarios: ScenarioResult
   const lines: { label: string; get: (v: View, s: ScenarioResult) => number; fmt: string; bold?: boolean }[] = [
     { label: "Highest tax bracket reached", get: (_v, s) => s.peakBracket, fmt: "0%" },
     { label: "Total converted to Roth", get: (v) => v.converted, fmt: USD },
+    ...(i.expenses.enabled
+      ? [
+          { label: "Living expenses paid", get: (v: View) => v.expenses, fmt: USD },
+          { label: "Withdrawn from IRAs for living expenses", get: (v: View) => v.spendFromIras, fmt: USD },
+          { label: "Outside account runs out at age (0 = never)", get: (_v: View, s: ScenarioResult) => s.outsideNegativeAge ?? 0, fmt: "0" },
+        ]
+      : []),
+    ...(scenarios.some((s) => s.totals.qbiDeduction > 0) ? [{ label: "QBI deductions taken", get: (v: View) => v.qbi, fmt: USD }] : []),
     { label: "Federal income tax", get: (v) => v.federal, fmt: USD },
+    ...(i.taxIncrease.enabled ? [{ label: "  of which: what-if rate increase", get: (v: View) => v.taxIncrease, fmt: USD }] : []),
     { label: "State income tax", get: (v) => v.state, fmt: USD },
     { label: "Medicare IRMAA + lost ACA subsidy", get: (v) => v.health, fmt: USD },
     { label: "NIIT + early-withdrawal penalty", get: (v) => v.other, fmt: USD },
@@ -149,8 +165,8 @@ function addComparison(wb: Workbook, i: PlannerInputs, out: PlannerOutput) {
   scenarios.forEach((_s, idx) => (ws.getColumn(idx + 2).width = 20));
   const nominal = new Map(scenarios.map((s) => [s.id, viewOf(s, false, i.inflation)]));
   const real = new Map(scenarios.map((s) => [s.id, viewOf(s, true, i.inflation)]));
-  let next = comparisonBlock(ws, "Future (nominal) dollars", scenarios, nominal, i.lifespan, out.recommendedId, 1);
-  comparisonBlock(ws, "Today's dollars (deflated by your inflation assumption)", scenarios, real, i.lifespan, out.recommendedId, next);
+  const next = comparisonBlock(ws, "Future (nominal) dollars", scenarios, nominal, i, out.recommendedId, 1);
+  comparisonBlock(ws, "Today's dollars (deflated by your inflation assumption)", scenarios, real, i, out.recommendedId, next);
   ws.views = [{ state: "frozen", xSplit: 1 }];
 }
 
@@ -216,6 +232,13 @@ const YEAR_COLS: { header: string; width: number; fmt?: string; get: (r: Scenari
   { header: "Traditional IRA (end)", width: 16, fmt: USD, get: (r) => r.tradEnd },
   { header: "Roth IRA (end)", width: 15, fmt: USD, get: (r) => r.rothEnd },
   { header: "Outside account (end)", width: 16, fmt: USD, get: (r) => r.outsideEnd },
+  { header: "Income received", width: 14, fmt: USD, get: (r) => r.cashIncome },
+  { header: "Living expenses", width: 14, fmt: USD, get: (r) => r.expenses },
+  { header: "From IRAs for spending", width: 15, fmt: USD, get: (r) => r.spendFromTrad + r.spendFromRoth },
+  { header: "Outside account growth", width: 15, fmt: USD, get: (r) => r.outsideGrowth },
+  { header: "Unfunded spending", width: 13, fmt: USD, get: (r) => r.unfunded },
+  { header: "QBI deduction", width: 13, fmt: USD, get: (r) => r.qbiDeduction },
+  { header: "Rate increase (in federal tax)", width: 15, fmt: USD, get: (r) => r.taxIncrease },
 ];
 
 const colLetter = (n: number) => {
@@ -248,7 +271,10 @@ function addScenarioSheet(wb: Workbook, s: ScenarioResult) {
   const last = first + s.rows.length - 1;
   const tot = ws.addRow(YEAR_COLS.map((c, idx) => {
     if (idx === 0) return "Total";
-    if (["RMD", "Roth conversion", "Federal tax", "State tax", "NIIT", "IRMAA", "ACA subsidy lost", "Penalty", "Total cost"].includes(c.header)) {
+    if (
+      ["RMD", "Roth conversion", "Federal tax", "State tax", "NIIT", "IRMAA", "ACA subsidy lost", "Penalty", "Total cost", "Income received", "Living expenses",
+        "From IRAs for spending", "Unfunded spending", "QBI deduction", "Rate increase (in federal tax)"].includes(c.header)
+    ) {
       const total = s.rows.reduce((a, r) => a + c.get(r), 0);
       return { formula: `SUM(${colLetter(idx + 1)}${first}:${colLetter(idx + 1)}${last})`, result: total };
     }
@@ -293,10 +319,14 @@ const ASSUMPTIONS = [
   "Law: 2026 federal brackets, standard/additional/senior deductions, capital-gain thresholds, NIIT, Social Security taxation, Medicare IRMAA, and the original ACA subsidy schedule, indexed by your inflation input; current law assumed to continue (the senior deduction ends after 2028).",
   "RMDs: SECURE 2.0 starting ages (72 / 73 / 75 by birth year) and the IRS Uniform Lifetime Table.",
   "Ages, RMDs and Medicare follow the primary owner; the spouse only affects 65+ deductions and IRMAA enrollee counts. No surviving-spouse filing change.",
-  "There is no spending model: other income is assumed to cover living costs and its own taxes; after-tax RMDs are reinvested in the outside account.",
+  "Living expenses (optional): when on, all income is received into the outside account and living expenses (grown with inflation) and every tax are paid from it. When off, other income is assumed to cover living costs and its own taxes, and after-tax RMDs are reinvested in the outside account (which is why it can keep growing).",
+  "When the outside account runs out: in 'unlimited' mode other savings cover the gap (a negative balance = extra funds needed, charged at the outside-account return); otherwise spending comes from that year's conversion, then an extra taxable Traditional IRA withdrawal, then the Roth.",
+  "The outside account earns its own return (less tax drag); the IRAs earn the investment return.",
+  "QBI (IRC §199A): 20% of income marked as qualified business income, capped at 20% of taxable income less capital gains, phased out in a straight line over $75,000 / $150,000 above the 2026 threshold ($201,750 / $403,500, indexed). This is the specified-service-business rule; W-2 wage and property limits for other businesses and the $400 minimum deduction are not modeled. The deduction does not reduce AGI, so it does not affect Social Security taxation, IRMAA, ACA or state tax.",
+  "What-if tax-rate increase (optional): from the chosen year, ordinary income tax on taxable income above the chosen level (2026 dollars, indexed) rises by the chosen amount, for you and for your heirs. Capital-gain rates are unchanged.",
   "State tax is a flat effective rate on AGI excluding taxable Social Security.",
   "Heirs are modeled as single filers who split the inherited Traditional IRA and withdraw it in 10 level payments; Roth balances pass tax-free. No estate tax.",
-  "Roth 5-year rules, AMT, itemized deductions, QBI, payroll taxes, QCDs and state-specific exclusions are not modeled.",
+  "Roth 5-year rules and early-withdrawal rules for Roth earnings, AMT, itemized deductions, payroll taxes, QCDs and state-specific exclusions are not modeled.",
   "This report is for education only and is not tax or investment advice.",
 ];
 

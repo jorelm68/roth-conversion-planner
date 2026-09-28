@@ -7,6 +7,10 @@ const find = (t: TraceSection[], key: string): number => {
   for (const s of t) for (const l of s.lines) if (l.key === key) return l.value as number;
   throw new Error(`no trace line with key ${key}`);
 };
+const maybe = (t: TraceSection[], key: string): number => {
+  for (const s of t) for (const l of s.lines) if (l.key === key) return l.value as number;
+  return 0;
+};
 const sumKeys = (t: TraceSection[], prefix: string): number =>
   t.flatMap((s) => s.lines).filter((l) => l.key?.startsWith(prefix)).reduce((a, l) => a + (l.value as number), 0);
 
@@ -30,9 +34,9 @@ function checkAgainstRows(i: PlannerInputs) {
       expect(find(t, "outsideEnd")).toBeCloseTo(r.outsideEnd, 4);
       // the bracket lines must add up to the ordinary tax, and ordinary + preferential to the federal tax
       expect(sumKeys(t, "bracket")).toBeCloseTo(find(t, "ordinaryTax"), 4);
-      expect(find(t, "ordinaryTax") + find(t, "preferentialTax")).toBeCloseTo(find(t, "federalTax"), 4);
+      expect(find(t, "ordinaryTax") + find(t, "preferentialTax") + maybe(t, "taxIncrease")).toBeCloseTo(find(t, "federalTax"), 4);
       // deduction pieces add up
-      expect(find(t, "taxableIncome")).toBeCloseTo(Math.max(0, find(t, "agi") - find(t, "deduction")), 4);
+      expect(find(t, "taxableIncome")).toBeCloseTo(Math.max(0, find(t, "agi") - find(t, "deduction")) - maybe(t, "qbiDeduction"), 4);
       expect(Math.abs(find(t, "year") - r.year)).toBeLessThan(tol);
       checked++;
     }
@@ -65,6 +69,18 @@ describe("year-by-year calculation trace", () => {
 
   it("matches when taxes are withheld from the IRA (penalty years)", () => {
     const i = inputs({ birthYear: 1976, currentAge: 50, conversionStartAge: 50, retirementAge: 50, paymentMode: "fromIra" });
+    expect(checkAgainstRows(i)).toBeGreaterThan(200);
+  });
+
+  it("matches with QBI income, living expenses drawn from the IRAs and a future rate increase", () => {
+    const i = inputs({
+      filingStatus: "mfj", birthYear: 1961, currentAge: 65, spouseBirthYear: 1963, retirementAge: 65, conversionStartAge: 65,
+      tradIraBalance: 3_000_000, rothBalance: 200_000, outsideBalance: 400_000, socialSecurityAnnual: 60_000, outsideReturn: 0.035,
+      paymentMode: "limited",
+      expenses: { enabled: true, monthly: 30_000 },
+      taxIncrease: { enabled: true, startYear: 2029, mode: "relative", amount: 0.2, threshold: 400_000 },
+      incomeStreams: [{ id: "p", label: "Partner retirement", kind: "ordinary", annualAmount: 240_000, startAge: 65, endAge: 80, inflationAdjusted: false, qbi: true }],
+    });
     expect(checkAgainstRows(i)).toBeGreaterThan(200);
   });
 

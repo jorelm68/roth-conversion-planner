@@ -1,13 +1,14 @@
 import { irmaaSurchargePerPerson, irmaaThreshold, irmaaTier, applicablePercentage, povertyLine } from "./health";
 import { rmdStartAge, uniformDistributionPeriod } from "./rmd";
 import type { YearData } from "./simulate";
-import { bracketTop, type FederalResult } from "./tax";
+import { bracketTop, hikeFor, type FederalResult } from "./tax";
 import {
   ADDITIONAL_STANDARD_DEDUCTION_65,
   IRMAA,
   LTCG_THRESHOLDS,
   NIIT,
   ORDINARY_BRACKETS,
+  QBI,
   SENIOR_DEDUCTION,
   SS_BASE,
   STANDARD_DEDUCTION,
@@ -46,6 +47,24 @@ export interface TraceParams {
   outsideGrowth: number;
   totalCost: number;
   marginalAllIn: number;
+  /** Living expenses are modeled (full cash flow through the outside account). */
+  spend: boolean;
+  /** Cash income − living expenses − cost with no IRA money (0 when living expenses are off). */
+  netCash: number;
+  /** Outside account + netCash + RMD: cash on hand before paying the extra tax on IRA money. */
+  pool: number;
+  /** Outside account after paying the extra tax, before covering any spending shortfall. */
+  cashBeforeCover: number;
+  /** Part of the strategy's conversion kept as cash for living expenses instead of going to the Roth. */
+  redirect: number;
+  /** Extra, taxable Traditional IRA withdrawal for living expenses. */
+  spendW: number;
+  /** Extra tax caused by that withdrawal. */
+  coverTax: number;
+  fromRoth: number;
+  unfunded: number;
+  /** Early-withdrawal penalty on money taken for living expenses. */
+  spendPenalty: number;
 }
 
 const usd = (label: string, value: number, note?: string, key?: string): TraceLine => ({ key, label, value, fmt: "usd", note });
@@ -117,6 +136,7 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
     usd("Long-term gains & qualified dividends", yd.preferential, "Taxed at 0/15/20%", "preferentialIncome"),
     usd("Tax-exempt interest", yd.taxExempt, "Not taxed, but counts toward Social Security taxation, IRMAA and ACA"),
     usd("Social Security benefits", yd.ss, "Household benefit grown with inflation from today, from the claiming age", "socialSecurity"),
+    ...(yd.qbi > 0 ? [usd("Qualified business income (§199A)", yd.qbi, "Ordinary income entries you marked as QBI", "qbi")] : []),
   ]);
 
   // 3. RMD
@@ -149,20 +169,27 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
     convLines.push(pctL("Bracket cap on this schedule", p.cap, Number.isFinite(top) ? `Ordinary taxable income may not exceed ${dollars(top)}` : undefined));
   }
   convLines.push(usd("Available to convert", p.maxC, "Balance minus the RMD (RMDs cannot be converted)"));
-  convLines.push(usd("Roth conversion", p.conv, "Largest amount that satisfies the strategy, solved against the full tax calculation below", "conversion"));
-  convLines.push(usd("Taxable part of the conversion", p.conv * p.fraction, undefined, "taxableConversion"));
+  const converted = p.conv - p.redirect;
+  if (p.redirect > 0) {
+    convLines.push(usd("Strategy amount", p.conv, "Largest amount that satisfies the strategy, solved against the full tax calculation below"));
+    convLines.push(usd("  − kept as cash for living expenses", p.redirect, "The outside account could not cover this year's spending (see the cash-flow section)"));
+  }
+  convLines.push(usd("Roth conversion", converted, p.redirect > 0 ? undefined : "Largest amount that satisfies the strategy, solved against the full tax calculation below", "conversion"));
+  convLines.push(usd("Taxable part of the conversion", converted * p.fraction, undefined, "taxableConversion"));
   add("4. Roth conversion decision", convLines);
 
   // 5. AGI & Social Security
   const ss = SS_BASE[status];
-  const otherAgi = yd.ordinary + p.rmd * p.fraction + p.conv * p.fraction + yd.preferential;
+  const spendOut = p.redirect + p.spendW;
+  const otherAgi = yd.ordinary + (p.rmd + p.conv + p.spendW) * p.fraction + yd.preferential;
   let ssNote = "Provisional income is at or below the first threshold: none of the benefit is taxable";
   if (f.provisionalIncome > ss.second) ssNote = `Above the second threshold (${dollars(ss.second)}): up to 85% of the benefit is taxable`;
   else if (f.provisionalIncome > ss.first) ssNote = `Between the thresholds (${dollars(ss.first)}–${dollars(ss.second)}): up to 50% of the benefit is taxable`;
   add("5. Adjusted gross income & Social Security", [
     usd("Ordinary income", yd.ordinary),
     usd("+ Taxable RMD", p.rmd * p.fraction),
-    usd("+ Taxable Roth conversion", p.conv * p.fraction),
+    usd("+ Taxable Roth conversion", converted * p.fraction),
+    ...(spendOut > 0 ? [usd("+ Taxable IRA withdrawals for living expenses", spendOut * p.fraction)] : []),
     usd("+ Long-term gains & qualified dividends", yd.preferential),
     usd("= Income before Social Security", otherAgi, undefined, "incomeBeforeSS"),
     usd("Provisional income", f.provisionalIncome, "Income before SS + tax-exempt interest + 50% of Social Security", "provisionalIncome"),
@@ -183,7 +210,14 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
     usd("Senior deduction before phase-out", seniorMax, `$6,000 per person 65+, tax years 2025–2028 only`),
     usd("Senior deduction after phase-out", f.seniorDeduction, `Reduced by 6% of AGI above ${dollars(SENIOR_DEDUCTION.threshold[status])}`, "seniorDeduction"),
     usd("Total deduction", f.deduction, undefined, "deduction"),
-    usd("Taxable income", f.taxableIncome, "AGI − deductions (not below 0)", "taxableIncome"),
+    ...(yd.qbi > 0
+      ? [
+          usd("Taxable income before the QBI deduction", f.taxableBeforeQbi, "AGI − deductions (not below 0)", "taxableBeforeQbi"),
+          pctL("Share of QBI still counted", f.qbiShare, `Falls in a straight line from 100% at ${dollars(QBI.threshold[status] * yd.factor)} to 0% at ${dollars(QBI.threshold[status] * yd.factor + QBI.phaseIn[status])} of taxable income`),
+          usd("QBI deduction (§199A)", f.qbiDeduction, "20% × QBI × share counted, at most 20% × (taxable income before it − gains & qualified dividends)", "qbiDeduction"),
+        ]
+      : []),
+    usd("Taxable income", f.taxableIncome, yd.qbi > 0 ? "Taxable income before the QBI deduction − QBI deduction" : "AGI − deductions (not below 0)", "taxableIncome"),
     usd("  of which long-term gains & qualified dividends", f.preferentialTaxable),
     usd("  of which ordinary taxable income", f.ordinaryTaxable, undefined, "ordinaryTaxable"),
   ]);
@@ -210,6 +244,17 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
   fedLines.push(
     usd("Tax on gains & qualified dividends", f.preferentialTax, `Stacked on top of ordinary income: 0% up to ${dollars(lt.zeroTo * yd.factor)}, 15% up to ${dollars(lt.fifteenTo * yd.factor)}, 20% above`, "preferentialTax"),
   );
+  if (yd.hike) {
+    const h = yd.hike;
+    fedLines.push(
+      usd(
+        "What-if rate increase",
+        f.rateIncreaseTax,
+        `Ordinary taxable income above ${dollars(h.threshold)} pays ${h.mode === "relative" ? `each bracket's rate × ${pc(h.amount)} more (e.g. 24% → ${pc(0.24 + hikeFor(0.24, h), 1)})` : `${pc(h.amount, 1)} more in every bracket`}, from ${inputs.taxIncrease.startYear}`,
+        "taxIncrease",
+      ),
+    );
+  }
   fedLines.push(usd("Federal income tax", f.tax, undefined, "federalTax"));
   fedLines.push(pctL("Marginal bracket (next ordinary dollar)", f.marginal, undefined, "marginalBracket"));
   const nii = yd.interest + yd.preferential;
@@ -266,6 +311,32 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
     usd("Could not be covered (adds to outside deficit)", p.uncovered),
   ]);
 
+  // 11b. Cash flow
+  if (p.spend) {
+    const cashLines: TraceLine[] = [
+      usd("Outside account at start of year", p.pre.outside),
+      usd("+ Wages, other income and Social Security received", yd.cashIncome, undefined, "cashIncome"),
+      usd("− Living expenses", yd.expenses, `${dollars(inputs.expenses.monthly)} a month × 12, grown with inflation`, "expenses"),
+      usd("− Taxes on that income alone", p.baseCost, "The cost with no IRA money (same in every strategy)"),
+      usd("+ RMD received", p.rmd),
+      usd("− Extra tax on IRA money paid from this account", p.fromOutside),
+      usd("= Cash after this year's spending and taxes", p.cashBeforeCover, p.cashBeforeCover < 0 ? "Negative: spending the account cannot cover" : undefined, "cashBeforeCover"),
+    ];
+    if (inputs.paymentMode === "unlimited") {
+      cashLines.push(text("Shortfall", p.cashBeforeCover < 0 ? "Covered by other savings" : "None", "“Unlimited” mode: the balance may go negative (extra funds needed); IRAs are not tapped"));
+    } else {
+      cashLines.push(
+        usd("Kept from the conversion for spending", p.redirect, "Already taxed as part of the conversion"),
+        usd("Extra Traditional IRA withdrawal for spending", p.spendW, "Taxable; sized so that after its own tax it covers what is left", "spendW"),
+        usd("  tax on that withdrawal", p.coverTax),
+        usd("Withdrawn from the Roth for spending", p.fromRoth, "Tax-free; used only once the Traditional IRA is empty", "spendFromRoth"),
+        usd("  early-withdrawal penalty on spending withdrawals", p.spendPenalty),
+        usd("Spending no account could cover", p.unfunded, p.unfunded > 0 ? "Every account is empty: the outside balance goes negative" : undefined, "unfunded"),
+      );
+    }
+    add("11b. Cash flow and living expenses", cashLines);
+  }
+
   // 12. Marginal rates
   add("12. Marginal tax rate on the next dollar of IRA income", [
     pctL("Federal ordinary bracket", f.marginal),
@@ -277,19 +348,26 @@ export function buildYearTrace(p: TraceParams): TraceSection[] {
   add("13. Account roll-forward (RMD and conversion happen at start of year, then growth)", [
     usd("Traditional IRA: start", p.pre.trad),
     usd("  − RMD", p.rmd),
-    usd("  − Roth conversion", p.conv),
+    usd("  − Roth conversion", converted),
+    ...(spendOut > 0 ? [usd("  − withdrawn for living expenses", spendOut)] : []),
     pctL("  × growth (investment return)", r),
     usd("Traditional IRA: end", p.post.trad, undefined, "tradEnd"),
     usd("Roth IRA: start", p.pre.roth),
-    usd("  + conversion", p.conv),
+    usd("  + conversion", converted),
     usd("  − withheld for tax/penalty", p.drawn),
+    ...(p.fromRoth > 0 ? [usd("  − withdrawn for living expenses", p.fromRoth)] : []),
     pctL("  × growth (investment return)", r),
     usd("Roth IRA: end", p.post.roth, undefined, "rothEnd"),
     usd("Outside account: start", p.pre.outside),
-    usd("  + RMD received (reinvested)", p.rmd),
+    ...(p.spend ? [usd("  + income − living expenses − tax on that income", p.netCash)] : []),
+    usd(p.spend ? "  + RMD received" : "  + RMD received (reinvested)", p.rmd),
     usd("  − extra cost paid from outside funds", p.fromOutside),
     usd("  − uncovered shortfall", p.uncovered),
-    pctL("  × growth (return less tax drag; return if negative)", p.outsideGrowth),
+    ...(p.spend && inputs.paymentMode !== "unlimited"
+      ? [usd("  + IRA money for living expenses, after its tax and penalty", p.outsideNow - p.cashBeforeCover)]
+      : []),
+    usd("  = after this year's cash flows", p.outsideNow, undefined, "outsideNow"),
+    pctL("  × growth (outside return less tax drag; outside return if negative)", p.outsideGrowth),
     usd("Outside account: end", p.post.outside, undefined, "outsideEnd"),
   ]);
 

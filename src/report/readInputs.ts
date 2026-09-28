@@ -1,6 +1,6 @@
 import type { CellValue, Workbook } from "exceljs";
-import type { FilingStatus, IncomeKind, IncomeStream, PlannerInputs, TaxPaymentMode } from "@/engine";
-import { FILING_LABELS, INPUT_FIELDS, irrelevantFields, KIND_LABELS, PAYMENT_LABELS, type FieldValue, type InputField } from "./inputFields";
+import type { FilingStatus, IncomeKind, IncomeStream, PlannerInputs, TaxIncreaseMode, TaxPaymentMode } from "@/engine";
+import { FILING_LABELS, HIKE_LABELS, INPUT_FIELDS, irrelevantFields, KIND_LABELS, PAYMENT_LABELS, type FieldValue, type InputField } from "./inputFields";
 
 /** A problem that stops the whole import (wrong file, unreadable file). Shown to the user as-is. */
 export class ImportError extends Error {
@@ -17,6 +17,8 @@ export interface ImportSummary {
   fieldsTotal: number;
   /** Labels of relevant settings not found (or blank) in the file; their current values were kept. */
   missing: string[];
+  /** Labels of newer settings an older report did not contain, set so it is calculated as it originally was. */
+  defaulted: string[];
   incomeStreams: number;
   /** Values that were adjusted, rejected, or rows that were skipped. */
   warnings: string[];
@@ -98,6 +100,15 @@ function toPayment(p: Prim): TaxPaymentMode | null {
   return null;
 }
 
+function toHikeMode(p: Prim): TaxIncreaseMode | null {
+  const t = norm(text(p));
+  if (!t) return null;
+  for (const [mode, label] of Object.entries(HIKE_LABELS)) if (norm(label) === t) return mode as TaxIncreaseMode;
+  if (/point|pts|pp/.test(t)) return "points";
+  if (/percent|relative|%|of each/.test(t)) return "relative";
+  return null;
+}
+
 const LEGACY_KIND: Record<string, IncomeKind> = {
   ordinary: "ordinary",
   "interest / non-qualified dividends": "interest",
@@ -163,6 +174,10 @@ function parseValue(f: InputField, p: Prim, warn: (m: string) => void): Parsed {
       const v = toYesNo(p);
       return v === null ? { error: `expected Yes or No but found "${shown(p)}"` } : { value: v };
     }
+    case "hikeMode": {
+      const v = toHikeMode(p);
+      return v ? { value: v } : { error: `expected one of: ${Object.values(HIKE_LABELS).join(" / ")}; found "${shown(p)}"` };
+    }
   }
 }
 
@@ -216,12 +231,20 @@ export function readInputsSheet(wb: Workbook, base: PlannerInputs): ImportSummar
     throw new ImportError("The Inputs sheet in this file does not contain planner settings. Choose an Excel report that was downloaded from this planner.");
   }
 
+  // Settings the file predates: reproduce how the report was calculated at the time.
+  const defaulted: string[] = [];
+  for (const f of INPUT_FIELDS) {
+    if (seen.has(f.key) || !f.legacy) continue;
+    f.set(inputs, f.legacy(inputs));
+    defaulted.push(f.label);
+  }
+
   // Other income: the file's list replaces the current one.
   const streams: IncomeStream[] = [];
   if (incomeHeader) {
     const legacyIncome = norm(text(cell(incomeHeader, 3))).startsWith("type");
     for (let r = incomeHeader + 1; r <= ws.rowCount; r++) {
-      const c = [1, 2, 3, 4, 5, 6].map((n) => cell(r, n));
+      const c = [1, 2, 3, 4, 5, 6, 7].map((n) => cell(r, n));
       if (c.every(isBlank)) continue;
       const skip = (why: string) => warnings.push(`Other income, row ${r}: ${why}; row skipped.`);
       const label = text(c[0]) || "Other income";
@@ -230,6 +253,7 @@ export function readInputsSheet(wb: Workbook, base: PlannerInputs): ImportSummar
       let from: number | null;
       let through: number | null;
       let inflationAdjusted: boolean | null;
+      let qbi: boolean | null = false;
 
       if (legacyIncome) {
         amount = toNumber(c[1]);
@@ -253,6 +277,7 @@ export function readInputsSheet(wb: Workbook, base: PlannerInputs): ImportSummar
         from = age(c[3], inputs.currentAge);
         through = age(c[4], inputs.lifespan);
         inflationAdjusted = isBlank(c[5]) ? false : toYesNo(c[5]);
+        qbi = isBlank(c[6]) ? false : toYesNo(c[6]);
       }
 
       if (!kind) {
@@ -271,20 +296,29 @@ export function readInputsSheet(wb: Workbook, base: PlannerInputs): ImportSummar
         skip('"Inflation-adjusted?" must be Yes or No');
         continue;
       }
-      streams.push({ id: `import-${streams.length + 1}`, label, kind, annualAmount: amount.n, startAge: from, endAge: through, inflationAdjusted });
+      if (qbi === null) {
+        skip('"QBI (§199A)?" must be Yes or No');
+        continue;
+      }
+      if (qbi && kind !== "ordinary") {
+        warnings.push(`Other income, row ${r}: only ordinary income can be QBI; the QBI mark was ignored.`);
+        qbi = false;
+      }
+      streams.push({ id: `import-${streams.length + 1}`, label, kind, annualAmount: amount.n, startAge: from, endAge: through, inflationAdjusted, ...(qbi ? { qbi: true } : {}) });
     }
   }
   inputs.incomeStreams = streams;
 
   const irrelevant = irrelevantFields(inputs);
   const failed = new Set(INPUT_FIELDS.filter((f) => seen.has(f.key) && !applied.has(f.key) && warnings.some((w) => w.startsWith(`${f.label}:`))).map((f) => f.key));
-  const missing = INPUT_FIELDS.filter((f) => !applied.has(f.key) && !failed.has(f.key) && !irrelevant.has(f.key)).map((f) => f.label);
+  const missing = INPUT_FIELDS.filter((f) => !applied.has(f.key) && !failed.has(f.key) && !irrelevant.has(f.key) && !defaulted.includes(f.label)).map((f) => f.label);
 
   return {
     inputs,
     fieldsRead: applied.size,
     fieldsTotal: INPUT_FIELDS.length,
     missing,
+    defaulted,
     incomeStreams: streams.length,
     warnings,
     legacyFormat: !keyed,

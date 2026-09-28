@@ -45,10 +45,20 @@ export function Results({ output, inputs }: Props) {
   const endAge = inputs.lifespan;
   const unit = real ? "today's dollars" : "future dollars";
 
+  const anyQbi = sorted.some((s) => s.totals.qbiDeduction > 0);
   const rows: { label: string; hint?: string; get: (v: View, s: ScenarioResult) => string; strong?: boolean }[] = [
     { label: "Highest tax bracket reached", hint: "Marginal ordinary bracket in any year", get: (_v, s) => bracketLabel(s) },
     { label: "Total converted to Roth", get: (v) => money(v.converted) },
-    { label: "Federal income tax", get: (v) => money(v.federal) },
+    ...(inputs.expenses.enabled
+      ? [
+          { label: "Living expenses paid", hint: "Grows with inflation", get: (v: View) => money(v.expenses) },
+          { label: "Withdrawn from IRAs for living expenses", hint: inputs.paymentMode === "unlimited" ? "None in “unlimited” mode: other savings cover shortfalls" : "Once the outside account runs out", get: (v: View) => money(v.spendFromIras) },
+          { label: "Outside account runs out at", hint: "First age with a negative balance", get: (_v: View, s: ScenarioResult) => (s.outsideNegativeAge === null ? "Never" : `Age ${s.outsideNegativeAge}`) },
+        ]
+      : []),
+    ...(anyQbi ? [{ label: "QBI deductions taken", hint: "20% of qualified business income, phased out at higher income (reduces taxable income)", get: (v: View) => money(v.qbi) }] : []),
+    { label: "Federal income tax", hint: inputs.taxIncrease.enabled ? "Includes the what-if rate increase" : undefined, get: (v) => money(v.federal) },
+    ...(inputs.taxIncrease.enabled ? [{ label: "  of which: what-if rate increase", get: (v: View) => money(v.taxIncrease) }] : []),
     { label: "State income tax", get: (v) => money(v.state) },
     { label: "Medicare IRMAA + lost ACA subsidy", get: (v) => money(v.health) },
     { label: "NIIT + early-withdrawal penalty", get: (v) => money(v.other) },
@@ -170,7 +180,10 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
   const lines = [
     { name: "Traditional IRA", color: "var(--c-conv)", points: s.rows.map((r) => ({ x: r.age, y: f(r, r.tradEnd) })) },
     { name: "Roth IRA", color: "var(--c-roth)", points: s.rows.map((r) => ({ x: r.age, y: f(r, r.rothEnd) })) },
+    { name: "Outside account", color: "var(--c-state)", points: s.rows.map((r) => ({ x: r.age, y: f(r, r.outsideEnd) })) },
   ];
+  const anyQbi = s.rows.some((r) => r.qbiDeduction > 0);
+  const hike = inputs.taxIncrease.enabled;
   const taxBars = s.rows.map((r) => ({
     x: r.age,
     parts: [
@@ -226,8 +239,11 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
               <th>State tax</th>
               <th>IRMAA</th>
               <th>ACA subsidy lost</th>
+              {anyQbi && <th title="Qualified business income deduction (§199A)">QBI deduction</th>}
+              {hike && <th title="Part of the federal tax caused by the what-if rate increase">Rate increase</th>}
               <th>Traditional IRA</th>
               <th>Roth IRA</th>
+              <th>Outside account</th>
             </tr>
           </thead>
           <tbody>
@@ -249,14 +265,81 @@ function Detail({ s, real, inputs }: { s: ScenarioResult; real: boolean; inputs:
                 <td>{money(f(r, r.stateTax))}</td>
                 <td>{money(f(r, r.irmaa))}</td>
                 <td>{money(f(r, r.acaSubsidyLost))}</td>
+                {anyQbi && <td>{money(f(r, r.qbiDeduction))}</td>}
+                {hike && <td>{money(f(r, r.taxIncrease))}</td>}
                 <td>{money(f(r, r.tradEnd))}</td>
                 <td>{money(f(r, r.rothEnd))}</td>
+                <td className={r.outsideEnd < 0 ? "bad" : undefined}>{money(f(r, r.outsideEnd))}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      <CashFlow s={s} inputs={inputs} f={f} />
     </section>
+  );
+}
+
+/** Where the outside account's money comes from and goes, year by year. */
+function CashFlow({ s, inputs, f }: { s: ScenarioResult; inputs: PlannerInputs; f: (r: YearRow, v: number) => number }) {
+  if (!inputs.expenses.enabled) {
+    return (
+      <p className="muted small">
+        Living expenses are not modeled, so the outside account only receives RMDs (after the extra tax they cause) and pays the extra tax on conversions; your other
+        income is assumed to cover your spending. Turn on <strong>Model my living expenses</strong> to see a full year-by-year cash flow.
+      </p>
+    );
+  }
+  const unlimited = inputs.paymentMode === "unlimited";
+  const anyUnfunded = s.rows.some((r) => r.unfunded > 0);
+  return (
+    <>
+      <h3 className="m-sub">Cash flow: outside account</h3>
+      <p className="muted small">
+        Income comes in; living expenses and every tax go out.{" "}
+        {unlimited
+          ? "In “unlimited” mode a shortfall is covered by other savings, so the balance can go negative (extra funds needed)."
+          : "When the account runs out, spending is drawn from this year's conversion, then the Traditional IRA (taxable, so its own tax is covered too), then the Roth."}{" "}
+        Taxes paid here exclude any tax withheld from a conversion.
+      </p>
+      <div className="table-scroll">
+        <table className="years cashflow">
+          <thead>
+            <tr>
+              <th>Age</th>
+              <th>Year</th>
+              <th>Start of year</th>
+              <th title="Wages, other income and Social Security">+ Income</th>
+              <th>+ RMD</th>
+              {!unlimited && <th title="Taken from the conversion, extra Traditional IRA withdrawals, and Roth withdrawals">+ From IRAs for spending</th>}
+              <th>− Living expenses</th>
+              <th title="Federal, state, NIIT, IRMAA, lost ACA subsidy and penalties, less any tax withheld from a conversion">− Taxes paid</th>
+              <th>+ Growth</th>
+              <th>End of year</th>
+              {anyUnfunded && <th title="Spending no account could cover">Unfunded</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {s.rows.map((r) => (
+              <tr key={r.k}>
+                <td>{r.age}</td>
+                <td>{r.year}</td>
+                <td>{money(f(r, r.outsideStart))}</td>
+                <td>{money(f(r, r.cashIncome))}</td>
+                <td>{money(f(r, r.rmd))}</td>
+                {!unlimited && <td>{money(f(r, r.spendFromTrad + r.spendFromRoth))}</td>}
+                <td>{money(f(r, r.expenses))}</td>
+                <td>{money(f(r, r.totalCost - r.withheld))}</td>
+                <td>{money(f(r, r.outsideGrowth))}</td>
+                <td className={r.outsideEnd < 0 ? "bad" : undefined}>{money(f(r, r.outsideEnd))}</td>
+                {anyUnfunded && <td className={r.unfunded > 0 ? "bad" : undefined}>{money(f(r, r.unfunded))}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

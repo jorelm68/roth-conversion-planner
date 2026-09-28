@@ -60,12 +60,13 @@ h3 { font-size: 14px; margin: 0 0 6px; color: var(--muted); font-weight: 600; }
 .affix { color: var(--muted); }
 select, .stream input[type="text"] { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: inherit; padding: 8px; font: inherit; width: 100%; }
 .check { flex-direction: row; align-items: center; gap: 8px; }
+label.check input:disabled + span { color: var(--muted); }
 label.check, .field.check { display: flex; flex-direction: row; align-items: center; gap: 8px; cursor: pointer; }
 .radio { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; cursor: pointer; }
 .radio input { margin-top: 4px; }
 
 .streams { grid-column: 1 / -1; }
-.stream { display: grid; grid-template-columns: 1.4fr 1.6fr 1fr 0.6fr 0.6fr auto auto; gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--line); }
+.stream { display: grid; grid-template-columns: 1.4fr 1.6fr 1fr 0.6fr 0.6fr auto auto auto; gap: 12px; align-items: end; padding: 12px 0; border-top: 1px solid var(--line); }
 .form-actions { grid-column: 1 / -1; }
 
 .btn { border: 1px solid var(--accent); background: var(--accent); color: #fff; padding: 8px 14px; border-radius: 8px; font: inherit; cursor: pointer; }
@@ -132,6 +133,7 @@ footer { margin-top: 32px; color: var(--muted); font-size: 13px; max-width: 900p
 .btn:disabled { opacity: 0.55; cursor: default; }
 .year-link { padding: 0; font-weight: 600; text-decoration: underline; }
 .years tbody tr { cursor: pointer; }
+.years.cashflow tbody tr { cursor: default; }
 .years tbody tr:hover td { background: var(--accent-soft); }
 .years tr.open td { background: var(--accent-soft); font-weight: 600; }
 

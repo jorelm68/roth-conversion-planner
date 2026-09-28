@@ -1,4 +1,4 @@
-import { bracketTax } from "./tax";
+import { bracketTax, rateIncreaseTax, type RateHike } from "./tax";
 import { BASE_YEAR, STANDARD_DEDUCTION } from "./taxData";
 
 export interface HeirParams {
@@ -40,7 +40,11 @@ export interface HeirSchedule {
  * Assumes level annual withdrawals split evenly among heirs, each heir a single filer with `otherIncome` of other
  * taxable income. `total` is the present value at the year of death, discounted at r.
  */
-export function heirsTaxSchedule(balance: number, deathYear: number, r: number, inflation: number, h: HeirParams): HeirSchedule {
+export function heirsTaxSchedule(
+  balance: number, deathYear: number, r: number, inflation: number, h: HeirParams,
+  /** Rate increase in force for a given year (the "what if" scenario), if any. */
+  hikeFor?: (year: number, factor: number) => RateHike | undefined,
+): HeirSchedule {
   const n = 10;
   const heirs = Math.max(1, h.count);
   if (balance <= 0) return { balance, years: n, heirs, payment: 0, perHeir: 0, rows: [], total: 0 };
@@ -52,8 +56,10 @@ export function heirsTaxSchedule(balance: number, deathYear: number, r: number, 
     const factor = Math.pow(1 + inflation, Math.max(0, deathYear + j - BASE_YEAR));
     const std = STANDARD_DEDUCTION.single * factor;
     const other = h.otherIncome * factor;
-    const without = bracketTax(other - std, "single", factor);
-    const withIra = bracketTax(other + perHeir - std, "single", factor);
+    const hike = hikeFor?.(deathYear + j, factor);
+    const fed = (taxable: number) => bracketTax(taxable, "single", factor) + rateIncreaseTax(taxable, "single", factor, hike);
+    const without = fed(other - std);
+    const withIra = fed(other + perHeir - std);
     const statePerHeir = perHeir * h.stateTaxRate;
     const tax = (withIra - without + statePerHeir) * heirs;
     const discount = 1 / Math.pow(1 + r, j);
@@ -64,6 +70,9 @@ export function heirsTaxSchedule(balance: number, deathYear: number, r: number, 
 }
 
 /** Present value at the year of death of the heirs' tax on an inherited Traditional IRA (see heirsTaxSchedule). */
-export function heirsTaxPV(balance: number, deathYear: number, r: number, inflation: number, h: HeirParams): number {
-  return heirsTaxSchedule(balance, deathYear, r, inflation, h).total;
+export function heirsTaxPV(
+  balance: number, deathYear: number, r: number, inflation: number, h: HeirParams,
+  hikeFor?: (year: number, factor: number) => RateHike | undefined,
+): number {
+  return heirsTaxSchedule(balance, deathYear, r, inflation, h, hikeFor).total;
 }
