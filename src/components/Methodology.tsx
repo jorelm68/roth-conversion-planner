@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { planDetail, type PlannerInputs, type PlannerOutput } from "@/engine";
 import { endBlocks, lawTables, overTimeTable, strategyRanking, yearBlocks, type Block, type Step, type Table } from "@/methodology/buildMethodology";
-import { FILING_LABELS, INPUT_FIELDS, KIND_LABELS, PAYMENT_LABELS, type InputField } from "@/report/inputFields";
-import type { FilingStatus, TaxPaymentMode } from "@/engine";
+import { FILING_LABELS, HIKE_LABELS, INPUT_FIELDS, KIND_LABELS, PAYMENT_LABELS, type InputField } from "@/report/inputFields";
+import type { FilingStatus, TaxIncreaseMode, TaxPaymentMode } from "@/engine";
 import { money, pct } from "./format";
 import { usePlannerContext } from "./PlannerProvider";
 
@@ -32,6 +32,8 @@ function inputDisplay(f: InputField, i: PlannerInputs): string {
       return PAYMENT_LABELS[v as TaxPaymentMode];
     case "yesno":
       return v ? "Yes" : "No";
+    case "hikeMode":
+      return HIKE_LABELS[v as TaxIncreaseMode];
     default:
       return String(v);
   }
@@ -180,8 +182,15 @@ export function Methodology({ output, inputs }: { output: PlannerOutput; inputs:
         ) : (
           <DataTable
             t={{
-              head: ["Description", "Type", "Amount per year", "Ages", "Grows with inflation"],
-              rows: inputs.incomeStreams.map((s) => [s.label, KIND_LABELS[s.kind], money(s.annualAmount), `${s.startAge}–${s.endAge}`, s.inflationAdjusted ? "Yes" : "No"]),
+              head: ["Description", "Type", "Amount per year", "Ages", "Grows with inflation", "QBI (§199A)"],
+              rows: inputs.incomeStreams.map((s) => [
+                s.label,
+                KIND_LABELS[s.kind],
+                money(s.annualAmount),
+                `${s.startAge}–${s.endAge}`,
+                s.inflationAdjusted ? "Yes" : "No",
+                s.kind === "ordinary" && s.qbi ? "Yes" : "No",
+              ]),
             }}
           />
         )}
@@ -196,7 +205,8 @@ export function Methodology({ output, inputs }: { output: PlannerOutput; inputs:
           </li>
           <li>
             <strong>Simulate each strategy year by year.</strong> Take any required minimum distribution, decide the Roth conversion, compute every tax and
-            cost with the full rules (section 3), pay it, and grow the accounts at your {pct(inputs.investmentReturn, 2)} return.
+            cost with the full rules (section 3), pay it{inputs.expenses.enabled ? " along with your living expenses" : ""}, and grow the IRAs at your {pct(inputs.investmentReturn, 2)} return and the
+            outside account at {pct(inputs.outsideReturn, 2)}.
           </li>
           <li>
             <strong>Count what&apos;s left.</strong> At the end of age {inputs.lifespan}, subtract the tax your heirs would owe on the remaining Traditional IRA. That

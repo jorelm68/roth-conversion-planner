@@ -10,7 +10,7 @@ import {
 } from "@/engine";
 import { applicablePercentage, irmaaTier, povertyLine } from "@/engine/health";
 import { rmdStartAge, uniformDistributionPeriod } from "@/engine/rmd";
-import { bracketTop } from "@/engine/tax";
+import { bracketTop, hikeFor } from "@/engine/tax";
 import {
   ACA,
   ADDITIONAL_STANDARD_DEDUCTION_65,
@@ -22,6 +22,7 @@ import {
   NIIT,
   ORDINARY_BRACKETS,
   PENALTY_FREE_AGE,
+  QBI,
   SENIOR_DEDUCTION,
   SS_BASE,
   STANDARD_DEDUCTION,
@@ -133,11 +134,15 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   let interest = 0;
   let preferential = 0;
   let taxExempt = 0;
+  let qbi = 0;
   for (const s of i.incomeStreams) {
     const active = yd.age >= s.startAge && yd.age <= s.endAge;
     const amt = active ? s.annualAmount * (s.inflationAdjusted ? real : 1) : 0;
-    if (s.kind === "ordinary") ordinary += amt;
-    else if (s.kind === "interest") {
+    const isQbi = s.kind === "ordinary" && !!s.qbi;
+    if (s.kind === "ordinary") {
+      ordinary += amt;
+      if (isQbi) qbi += amt;
+    } else if (s.kind === "interest") {
       ordinary += amt;
       interest += amt;
     } else if (s.kind === "qualified") preferential += amt;
@@ -147,7 +152,7 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
       : s.inflationAdjusted
         ? `${$(s.annualAmount)} × ${X(real)}`
         : `${$(s.annualAmount)} (fixed)`;
-    sources.push([s.label || "Other income", how, KIND_TREATMENT[s.kind], $(amt)]);
+    sources.push([s.label || "Other income", how, isQbi ? "Ordinary income; qualified business income (§199A)" : KIND_TREATMENT[s.kind], $(amt)]);
   }
   const ss = yd.age >= i.socialSecurityStartAge ? i.socialSecurityAnnual * real : 0;
   sources.push([
@@ -167,6 +172,7 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
       step("Qualified dividends and long-term gains", "usd", preferential, { engine: yd.preferential }),
       step("Tax-exempt interest", "usd", taxExempt, { engine: yd.taxExempt }),
       step("Social Security benefits", "usd", ss, { formula: "benefit × growth factor, from your claiming age", engine: yd.ss }),
+      ...(qbi > 0 || yd.qbi > 0 ? [step("  of which qualified business income", "usd", qbi, { formula: "ordinary income entries marked as QBI (§199A)", engine: yd.qbi })] : []),
     ],
   });
 
@@ -237,11 +243,18 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
     const capTop = bracketTop(p.cap, status, yd.factor);
     convSteps.push(step(`Never above the ${P(p.cap, 0)} bracket`, "usd", capTop, { formula: "ordinary taxable income may not pass the top of this bracket" }));
   }
+  const converted = conv - p.redirect;
   convSteps.push(
     step("Available to convert", "usd", available, { formula: "start-of-year balance − RMD", work: `${$(p.pre.trad)} − ${$(rmd)}`, engine: p.maxC }),
-    step("Roth conversion", "usd", independent ?? conv, { formula: convFormula, work: convWork, engine: conv, strong: true }),
-    step("Taxable part of the conversion", "usd", conv * share, { formula: "conversion × taxable share", work: `${$(conv)} × ${P(share)}` }),
+    step(p.redirect > 0 ? "Strategy amount" : "Roth conversion", "usd", independent ?? conv, { formula: convFormula, work: convWork, engine: conv, strong: p.redirect <= 0 }),
   );
+  if (p.redirect > 0) {
+    convSteps.push(
+      step("  kept as cash for living expenses", "usd", p.redirect, { formula: "the part of this year's spending the outside account could not cover (see the cash-flow step)" }),
+      step("Roth conversion", "usd", converted, { formula: "strategy amount − amount kept for spending", work: `${$(conv)} − ${$(p.redirect)}`, engine: row.conversion, strong: true }),
+    );
+  }
+  convSteps.push(step("Taxable part of the conversion", "usd", converted * share, { formula: "conversion × taxable share", work: `${$(converted)} × ${P(share)}` }));
   blocks.push({
     id: "conversion",
     title: "How much is converted to the Roth",
@@ -250,7 +263,8 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   });
 
   // 5. Social Security taxation
-  const incomeBeforeSS = ordinary + rmd * share + conv * share + preferential;
+  const spendW = p.spendW;
+  const incomeBeforeSS = ordinary + rmd * share + conv * share + spendW * share + preferential;
   const provisional = incomeBeforeSS + taxExempt + 0.5 * ss;
   const { first: b1, second: b2 } = SS_BASE[status];
   let taxableSS = 0;
@@ -272,8 +286,13 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
       "Up to 85% of benefits become taxable as your other income rises. While you are in that range, each extra $1 of IRA income can make up to $0.85 more of your benefit taxable, so that dollar is taxed at as much as 1.85× your bracket rate.",
     steps: [
       step("Income before Social Security", "usd", incomeBeforeSS, {
-        formula: "ordinary income + taxable RMD + taxable conversion + gains and qualified dividends",
-        work: `${$(ordinary)} + ${$(rmd * share)} + ${$(conv * share)} + ${$(preferential)}`,
+        formula:
+          spendW > 0
+            ? "ordinary income + taxable RMD + taxable conversion (including any part kept for spending) + taxable withdrawal for spending + gains and qualified dividends"
+            : "ordinary income + taxable RMD + taxable conversion + gains and qualified dividends",
+        work: spendW > 0
+          ? `${$(ordinary)} + ${$(rmd * share)} + ${$(conv * share)} + ${$(spendW * share)} + ${$(preferential)}`
+          : `${$(ordinary)} + ${$(rmd * share)} + ${$(conv * share)} + ${$(preferential)}`,
         engine: f.agi - f.taxableSS,
       }),
       step("Provisional income", "usd", provisional, {
@@ -313,7 +332,13 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   const seniorThr = SENIOR_DEDUCTION.threshold[status];
   const senior = seniorMax > 0 ? Math.max(0, seniorMax - SENIOR_DEDUCTION.phaseoutRate * Math.max(0, agi - seniorThr)) : 0;
   const deduction = std + add65 + senior;
-  const taxable = Math.max(0, agi - deduction);
+  const taxableBefore = Math.max(0, agi - deduction);
+  const qbiThr = QBI.threshold[status] * factor;
+  const qbiRange = QBI.phaseIn[status];
+  const qbiShare = Math.min(1, Math.max(0, 1 - (taxableBefore - qbiThr) / qbiRange));
+  const qbiLimit = QBI.rate * Math.max(0, taxableBefore - preferential);
+  const qbiDed = qbi > 0 ? Math.min(QBI.rate * qbi * qbiShare, qbiLimit) : 0;
+  const taxable = Math.max(0, taxableBefore - qbiDed);
   const prefTaxable = Math.min(preferential, taxable);
   const ordTaxable = taxable - prefTaxable;
   blocks.push({
@@ -337,11 +362,29 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
         engine: f.seniorDeduction,
       }),
       step("Total deductions", "usd", deduction, { formula: "sum of the three", engine: f.deduction }),
-      step("Taxable income", "usd", taxable, { formula: "AGI − total deductions (not below 0)", work: `${$(agi)} − ${$(deduction)}`, engine: f.taxableIncome, strong: true }),
+      ...(qbi > 0
+        ? [
+            step("Taxable income before the QBI deduction", "usd", taxableBefore, { formula: "AGI − total deductions (not below 0)", work: `${$(agi)} − ${$(deduction)}`, engine: f.taxableBeforeQbi }),
+            step("Share of QBI still counted", "pct", qbiShare, {
+              formula: `100% up to ${$(qbiThr)} of taxable income (the 2026 threshold × indexing factor), falling in a straight line to 0% at ${$(qbiThr + qbiRange)} (specified service business rule)`,
+              work: `1 − (${$(taxableBefore)} − ${$(qbiThr)}) ÷ ${$(qbiRange)}, kept between 0% and 100%`,
+              engine: f.qbiShare,
+            }),
+            step("QBI deduction (§199A)", "usd", qbiDed, {
+              formula: "the smaller of 20% × QBI × share counted and 20% × (taxable income before it − gains and qualified dividends)",
+              work: `min(20% × ${$(qbi)} × ${P(qbiShare)}, 20% × max(0, ${$(taxableBefore)} − ${$(preferential)}))`,
+              engine: f.qbiDeduction,
+            }),
+            step("Taxable income", "usd", taxable, { formula: "taxable income before the QBI deduction − QBI deduction", work: `${$(taxableBefore)} − ${$(qbiDed)}`, engine: f.taxableIncome, strong: true }),
+          ]
+        : [step("Taxable income", "usd", taxable, { formula: "AGI − total deductions (not below 0)", work: `${$(agi)} − ${$(deduction)}`, engine: f.taxableIncome, strong: true })]),
       step("  taxed at capital-gain rates", "usd", prefTaxable, { formula: "the gains and qualified dividends inside taxable income" }),
       step("  taxed at ordinary rates", "usd", ordTaxable, { formula: "taxable income − the capital-gain part", engine: f.ordinaryTaxable }),
     ],
-    law: "2026 figures from IRS Rev. Proc. 2025-32 as amended by the One Big Beautiful Bill Act (senior deduction: 2025–2028).",
+    law:
+      qbi > 0
+        ? "2026 figures from IRS Rev. Proc. 2025-32 as amended by the One Big Beautiful Bill Act (senior deduction: 2025–2028). QBI deduction: IRC §199A, made permanent by the OBBBA, which widened the phase-in range to $75,000 / $150,000."
+        : "2026 figures from IRS Rev. Proc. 2025-32 as amended by the One Big Beautiful Bill Act (senior deduction: 2025–2028).",
   });
 
   // 8. Federal income tax
@@ -364,6 +407,31 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   const at15 = Math.max(0, Math.min(stackTop, fifteenTo) - Math.max(ordTaxable, zeroTo));
   const at20 = Math.max(0, stackTop - Math.max(ordTaxable, fifteenTo));
   const gainsTax = 0.15 * at15 + 0.2 * at20;
+  const h = yd.hike;
+  let hikeTax = 0;
+  const hikeRows: string[][] = [];
+  if (h) {
+    brackets.forEach((b, n) => {
+      const lo = Math.max(b.from * factor, h.threshold);
+      const hi = n + 1 < brackets.length ? brackets[n + 1].from * factor : Infinity;
+      const inB = Math.max(0, Math.min(ordTaxable, hi) - lo);
+      if (inB <= 0) return;
+      const add = h.mode === "relative" ? b.rate * h.amount : h.amount;
+      hikeTax += inB * add;
+      hikeRows.push([P(b.rate, 0), `${$(inB)} × ${P(add, 2)}`]);
+    });
+  }
+  const hikeSteps: Step[] = h
+    ? [
+        step("What-if rate increase", "usd", hikeTax, {
+          formula: `from ${i.taxIncrease.startYear}, ordinary taxable income above ${$(i.taxIncrease.threshold)} (2026 dollars; ${$(h.threshold)} in ${yd.year}) pays ${
+            h.mode === "relative" ? `each bracket's rate × ${P(h.amount, 0)} more (24% becomes ${P(0.24 + hikeFor(0.24, h), 1)})` : `${P(h.amount, 1)} more in every bracket`
+          }`,
+          work: hikeRows.length ? hikeRows.map((r) => `${r[0]} bracket: ${r[1]}`).join(" + ") : `${$(ordTaxable)} is not above ${$(h.threshold)}`,
+          engine: f.rateIncreaseTax,
+        }),
+      ]
+    : [];
   blocks.push({
     id: "federal",
     title: "Federal income tax",
@@ -385,7 +453,13 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
       }),
       step("Gains taxed at 20%", "usd", at20, { formula: `the part above ${$(fifteenTo)}`, work: `max(0, ${$(stackTop)} − max(${$(ordTaxable)}, ${$(fifteenTo)}))` }),
       step("Tax on gains and qualified dividends", "usd", gainsTax, { formula: "15% × gains at 15% + 20% × gains at 20%", work: `15% × ${$(at15)} + 20% × ${$(at20)}`, engine: f.preferentialTax }),
-      step("Federal income tax", "usd", ordTax + gainsTax, { formula: "ordinary tax + gains tax", work: `${$(ordTax)} + ${$(gainsTax)}`, engine: f.tax, strong: true }),
+      ...hikeSteps,
+      step("Federal income tax", "usd", ordTax + gainsTax + hikeTax, {
+        formula: h ? "ordinary tax + gains tax + what-if rate increase" : "ordinary tax + gains tax",
+        work: h ? `${$(ordTax)} + ${$(gainsTax)} + ${$(hikeTax)}` : `${$(ordTax)} + ${$(gainsTax)}`,
+        engine: f.tax,
+        strong: true,
+      }),
     ],
   });
 
@@ -507,7 +581,8 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   }
 
   // 13. Cost and payment
-  const penalty = yd.age < PENALTY_FREE_AGE ? EARLY_WITHDRAWAL_PENALTY * p.withheldTax : 0;
+  const penaltyBase = p.withheldTax + (p.redirect + p.spendW) / (1 + EARLY_WITHDRAWAL_PENALTY);
+  const penalty = yd.age < PENALTY_FREE_AGE ? EARLY_WITHDRAWAL_PENALTY * penaltyBase : 0;
   const total = f.tax + p.stateTax + f.niit + p.irmaa + p.acaLost + penalty;
   const extra = f.tax + p.stateTax + f.niit + p.irmaa + p.acaLost - p.baseCost;
   const modeText =
@@ -522,16 +597,31 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
     explain: `The extra tax caused by IRA money is what a conversion costs. ${modeText} Before age ${PENALTY_FREE_AGE} (the year you turn 59½), tax withheld from the IRA also carries the 10% early-withdrawal penalty.`,
     steps: [
       step("Cost with no IRA money at all", "usd", p.baseCost, { formula: "federal + state + NIIT + IRMAA on your other income alone" }),
-      step("Extra cost caused by IRA money", "usd", extra, {
-        formula: "(federal + state + NIIT + IRMAA + ACA credit lost) − cost with no IRA money",
-        work: `${$(f.tax)} + ${$(p.stateTax)} + ${$(f.niit)} + ${$(p.irmaa)} + ${$(p.acaLost)} − ${$(p.baseCost)}`,
-        engine: p.extra,
-      }),
+      ...(p.coverTax !== 0
+        ? [
+            step("Extra cost caused by all IRA money", "usd", extra, {
+              formula: "(federal + state + NIIT + IRMAA + ACA credit lost) − cost with no IRA money",
+              work: `${$(f.tax)} + ${$(p.stateTax)} + ${$(f.niit)} + ${$(p.irmaa)} + ${$(p.acaLost)} − ${$(p.baseCost)}`,
+            }),
+            step("  of which: tax on the extra withdrawal for living expenses", "usd", p.coverTax, { formula: "paid out of that withdrawal (see the cash-flow step)" }),
+            step("Extra cost caused by the RMD and conversion", "usd", extra - p.coverTax, {
+              formula: "extra cost of all IRA money − tax on the withdrawal for living expenses",
+              work: `${$(extra)} − ${$(p.coverTax)}`,
+              engine: p.extra,
+            }),
+          ]
+        : [
+            step("Extra cost caused by IRA money", "usd", extra, {
+              formula: "(federal + state + NIIT + IRMAA + ACA credit lost) − cost with no IRA money",
+              work: `${$(f.tax)} + ${$(p.stateTax)} + ${$(f.niit)} + ${$(p.irmaa)} + ${$(p.acaLost)} − ${$(p.baseCost)}`,
+              engine: p.extra,
+            }),
+          ]),
       step("Paid from outside funds or RMD cash", "usd", p.fromOutside),
       step("Withheld from the conversion (tax + penalty)", "usd", p.drawn),
       step("Early-withdrawal penalty", "usd", penalty, {
-        formula: `10% × tax withheld from the IRA, only before age ${PENALTY_FREE_AGE}`,
-        work: yd.age < PENALTY_FREE_AGE ? `10% × ${$(p.withheldTax)}` : `age ${yd.age}: no penalty`,
+        formula: `10% × the net amount taken out of the IRA for tax (and for living expenses), only before age ${PENALTY_FREE_AGE}`,
+        work: yd.age < PENALTY_FREE_AGE ? `10% × ${$(penaltyBase)}` : `age ${yd.age}: no penalty`,
         engine: p.penalty,
       }),
       step("Total taxes and costs this year", "usd", total, {
@@ -547,37 +637,95 @@ export function yearBlocks(p: TraceParams, row: YearRow): Block[] {
   });
 
   // 14. Roll-forward
+  // Cash flow (living expenses)
+  if (p.spend) {
+    const expenses = i.expenses.monthly * 12 * real;
+    const cashIncome = ordinary + preferential + taxExempt + ss;
+    const netCash = cashIncome - expenses - p.baseCost;
+    const before = p.pre.outside + netCash + rmd - p.fromOutside - p.uncovered;
+    const cashSteps: Step[] = [
+      step("Cash received", "usd", cashIncome, { formula: "wages + other income + Social Security", work: `${$(ordinary)} + ${$(preferential)} + ${$(taxExempt)} + ${$(ss)}`, engine: yd.cashIncome }),
+      step("Living expenses", "usd", expenses, { formula: "monthly expenses × 12 × growth factor", work: `${$(i.expenses.monthly)} × 12 × ${X(real)}`, engine: row.expenses }),
+      step("Left after expenses and the tax on that income", "usd", netCash, {
+        formula: "cash received − living expenses − cost with no IRA money (the same in every strategy)",
+        work: `${$(cashIncome)} − ${$(expenses)} − ${$(p.baseCost)}`,
+        engine: p.netCash,
+      }),
+      step("Outside account after spending and taxes", "usd", before, {
+        formula: "start of year + amount above + RMD − extra tax paid from the account − any tax that could not be covered",
+        work: `${$(p.pre.outside)} + ${$(netCash)} + ${$(rmd)} − ${$(p.fromOutside)} − ${$(p.uncovered)}`,
+        engine: p.cashBeforeCover,
+        strong: true,
+      }),
+    ];
+    if (i.paymentMode === "unlimited") {
+      cashSteps.push(step("How a shortfall is covered", "text", before < 0 ? "By other savings (the balance goes negative)" : "No shortfall", { formula: "“Unlimited” payment mode: IRAs are never tapped for spending" }));
+    } else {
+      const pen = yd.age < PENALTY_FREE_AGE ? EARLY_WITHDRAWAL_PENALTY : 0;
+      cashSteps.push(
+        step("Kept from the conversion", "usd", p.redirect, { formula: "first source: this year's conversion (it is taxed either way), grossed up for any penalty" }),
+        step("Extra Traditional IRA withdrawal", "usd", p.spendW, {
+          formula: "next source: the smallest withdrawal that, after its own tax (and any penalty), covers what is left; found by repeatedly halving the search range",
+          engine: row.spendFromTrad - p.redirect,
+        }),
+        step("  tax caused by that withdrawal", "usd", p.coverTax),
+        step("From the Roth IRA", "usd", p.fromRoth, { formula: "last source, once the Traditional IRA is empty (tax-free)", engine: row.spendFromRoth }),
+        step("Not covered by any account", "usd", p.unfunded, { formula: "what is still missing; the outside balance goes negative", engine: row.unfunded }),
+        step("Outside account after covering the shortfall", "usd", before + (p.redirect + p.spendW) / (1 + pen) - p.coverTax + p.fromRoth, {
+          formula: "amount above + (kept from conversion + extra withdrawal) ÷ (1 + penalty rate) − its tax + Roth withdrawal",
+          work: `${$(before)} + (${$(p.redirect)} + ${$(p.spendW)}) ÷ ${X(1 + pen)} − ${$(p.coverTax)} + ${$(p.fromRoth)}`,
+          engine: p.outsideNow,
+        }),
+      );
+    }
+    blocks.push({
+      id: "cashflow",
+      title: "Cash flow: living expenses and where the money comes from",
+      explain:
+        i.paymentMode === "unlimited"
+          ? "All income comes into the outside account and living expenses and every tax are paid from it. In “unlimited” mode any shortfall is assumed to come from other savings, so the balance can go negative (extra funds needed)."
+          : "All income comes into the outside account and living expenses and every tax are paid from it. When it runs out, money comes from this year's conversion first, then an extra (taxable) Traditional IRA withdrawal, then the Roth.",
+      steps: cashSteps,
+    });
+  }
+
   const r = i.investmentReturn;
-  const tradEnd = (p.pre.trad - rmd - conv) * (1 + r);
-  const rothEnd = (p.pre.roth + conv - p.drawn) * (1 + r);
-  const outsideNow = p.pre.outside + rmd - p.fromOutside - p.uncovered;
-  const growth = outsideNow > 0 ? r - i.outsideTaxDrag : r;
+  const tradEnd = (p.pre.trad - rmd - conv - spendW) * (1 + r);
+  const rothEnd = (p.pre.roth + converted - p.drawn - p.fromRoth) * (1 + r);
+  const outsideNow = p.outsideNow;
+  const ro = i.outsideReturn;
+  const growth = outsideNow > 0 ? ro - i.outsideTaxDrag : ro;
   const outsideEnd = outsideNow * (1 + growth);
-  const basisNext = Math.max(0, p.pre.basis - (rmd + conv) * (1 - share));
+  const basisNext = Math.max(0, p.pre.basis - (rmd + conv + spendW) * (1 - share));
+  const outsideNowIndependent = p.spend ? undefined : p.pre.outside + rmd - p.fromOutside - p.uncovered;
   blocks.push({
     id: "rollforward",
     title: "Account balances at the end of the year",
-    explain: "The RMD and the conversion happen at the start of the year; then each account grows for a year at your assumed return. The outside account also loses the tax drag you entered.",
+    explain: "The RMD and the conversion happen at the start of the year; then the IRAs grow for a year at your investment return and the outside account at its own return, less the tax drag you entered.",
     steps: [
       step("Traditional IRA at year end", "usd", tradEnd, {
-        formula: "(start − RMD − conversion) × (1 + return)",
-        work: `(${$(p.pre.trad)} − ${$(rmd)} − ${$(conv)}) × (1 + ${P(r)})`,
+        formula: spendW > 0 ? "(start − RMD − strategy amount − extra withdrawal for spending) × (1 + return)" : "(start − RMD − conversion) × (1 + return)",
+        work: spendW > 0 ? `(${$(p.pre.trad)} − ${$(rmd)} − ${$(conv)} − ${$(spendW)}) × (1 + ${P(r)})` : `(${$(p.pre.trad)} − ${$(rmd)} − ${$(conv)}) × (1 + ${P(r)})`,
         engine: row.tradEnd,
         strong: true,
       }),
       step("Roth IRA at year end", "usd", rothEnd, {
-        formula: "(start + conversion − amount withheld) × (1 + return)",
-        work: `(${$(p.pre.roth)} + ${$(conv)} − ${$(p.drawn)}) × (1 + ${P(r)})`,
+        formula: p.fromRoth > 0 ? "(start + conversion − amount withheld − withdrawn for spending) × (1 + return)" : "(start + conversion − amount withheld) × (1 + return)",
+        work: p.fromRoth > 0
+          ? `(${$(p.pre.roth)} + ${$(converted)} − ${$(p.drawn)} − ${$(p.fromRoth)}) × (1 + ${P(r)})`
+          : `(${$(p.pre.roth)} + ${$(converted)} − ${$(p.drawn)}) × (1 + ${P(r)})`,
         engine: row.rothEnd,
         strong: true,
       }),
-      step("Outside account after this year's cash flows", "usd", outsideNow, {
-        formula: "start + RMD received − cost paid from it − shortfall not covered",
-        work: `${$(p.pre.outside)} + ${$(rmd)} − ${$(p.fromOutside)} − ${$(p.uncovered)}`,
-        engine: p.outsideNow,
-      }),
+      p.spend
+        ? step("Outside account after this year's cash flows", "usd", outsideNow, { formula: "from the cash-flow step above" })
+        : step("Outside account after this year's cash flows", "usd", outsideNowIndependent!, {
+            formula: "start + RMD received − cost paid from it − shortfall not covered",
+            work: `${$(p.pre.outside)} + ${$(rmd)} − ${$(p.fromOutside)} − ${$(p.uncovered)}`,
+            engine: p.outsideNow,
+          }),
       step("Outside account at year end", "usd", outsideEnd, {
-        formula: "that amount × (1 + return − tax drag); a negative balance grows at the full return",
+        formula: "that amount × (1 + outside return − tax drag); a negative balance grows at the full outside return",
         work: `${$(outsideNow)} × (1 + ${P(growth)})`,
         engine: row.outsideEnd,
         strong: true,
@@ -675,7 +823,9 @@ export function endBlocks(i: PlannerInputs, s: ScenarioResult, d: PlanDetail, no
         step("Medicare IRMAA", "usd", irmaa, { engine: s.totals.irmaa }),
         step("ACA credit lost", "usd", aca, { engine: s.totals.acaSubsidyLost }),
         step("Early-withdrawal penalties", "usd", pen, { engine: s.totals.penalty }),
-        step("Your lifetime taxes and costs", "usd", owner, { formula: "sum of the six lines above", engine: s.ownerCost, strong: true }),
+        ...(i.taxIncrease.enabled ? [step("  of the federal tax: what-if rate increase", "usd", sum((x) => x.taxIncrease), { engine: s.totals.taxIncrease })] : []),
+        ...(s.totals.qbiDeduction > 0 ? [step("QBI deductions taken (reduce taxable income)", "usd", sum((x) => x.qbiDeduction), { engine: s.totals.qbiDeduction })] : []),
+        step("Your lifetime taxes and costs", "usd", owner, { formula: "federal + state + NIIT + IRMAA + ACA credit lost + penalties", engine: s.ownerCost, strong: true }),
         step("Including your heirs' tax", "usd", owner + heirsPv, { formula: "your lifetime total + heirs' tax", work: `${$(owner)} + ${$(heirsPv)}`, strong: true }),
       ],
     },
@@ -689,6 +839,7 @@ export function overTimeTable(d: PlanDetail): Table {
     head: [
       "Age", "Year", "Indexing factor", "Top of 12% bracket", "Top of 22% bracket", "Total deductions", "RMD divisor", "RMD", "Conversion",
       "Provisional income", "Taxable Social Security", "AGI", "Taxable income", "Bracket", "Federal tax", "IRMAA tier", "IRMAA", "Traditional IRA (end)", "Roth IRA (end)",
+      "Outside account (end)",
     ],
     rows: d.years.map((p, n) => {
       const row = d.rows[n];
@@ -697,6 +848,7 @@ export function overTimeTable(d: PlanDetail): Table {
         String(p.yd.age), String(p.yd.year), X(p.yd.factor), $(bracketTop(0.12, status, p.yd.factor)), $(bracketTop(0.22, status, p.yd.factor)),
         $(p.f.deduction), due ? String(uniformDistributionPeriod(p.yd.age)) : "", $(p.rmd), $(p.conv), $(p.f.provisionalIncome), $(p.f.taxableSS), $(p.f.agi),
         $(p.f.taxableIncome), P(p.f.marginal, 0), $(p.f.tax), p.yd.medicare > 0 ? String(irmaaTier(p.lagMagi, status, p.yd.factor)) : "", $(p.irmaa), $(row.tradEnd), $(row.rothEnd),
+        $(row.outsideEnd),
       ];
     }),
   };

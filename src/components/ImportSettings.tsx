@@ -80,6 +80,9 @@ export function ImportSettings({ current, onImport }: Props) {
             from {done.file}. Results below are recalculated with them.
           </p>
           {done.summary.missing.length > 0 && <p>Not found in the file, so kept as they were: {done.summary.missing.join(", ")}.</p>}
+          {done.summary.defaulted.length > 0 && (
+            <p>This report is from an earlier version, so these newer settings were set to match how it was calculated: {done.summary.defaulted.join(", ")}.</p>
+          )}
           {done.summary.warnings.length > 0 && (
             <>
               <p>Please check:</p>

@@ -53,6 +53,19 @@ export const LTCG_THRESHOLDS: Record<FilingStatus, { zeroTo: number; fifteenTo: 
   mfj: { zeroTo: 98_900, fifteenTo: 613_700 },
 };
 
+/**
+ * Qualified business income deduction (IRC §199A), 2026. 20% of QBI, limited to 20% of taxable income (before this
+ * deduction) minus net capital gain. Thresholds indexed (Rev. Proc. 2025-32); the phase-in ranges ($75k / $150k since
+ * OBBBA) are not. Above the threshold the planner applies the specified-service (SSTB) rule: the QBI counted shrinks
+ * in a straight line to zero across the phase-in range. (Non-SSTB businesses are limited by W-2 wages / property
+ * instead, which is not modeled.)
+ */
+export const QBI = {
+  rate: 0.2,
+  threshold: { single: 201_750, mfj: 403_500 } as Record<FilingStatus, number>,
+  phaseIn: { single: 75_000, mfj: 150_000 } as Record<FilingStatus, number>,
+};
+
 /** Net Investment Income Tax. Threshold is NOT indexed. */
 export const NIIT = { rate: 0.038, threshold: { single: 200_000, mfj: 250_000 } as Record<FilingStatus, number> };
 

@@ -25,14 +25,17 @@ const custom: PlannerInputs = {
   lastConversionAge: 80,
   lifespan: 92,
   investmentReturn: 0.055,
+  outsideReturn: 0.035,
   inflation: 0.0275,
   outsideTaxDrag: 0.006,
+  expenses: { enabled: true, monthly: 12_500 },
+  taxIncrease: { enabled: true, startYear: 2030, mode: "points", amount: 0.03, threshold: 250_000 },
   aca: { enabled: true, benchmarkPremium: 15_500, premiumGrowth: 0.045 },
   priorMagi1: 150_000,
   priorMagi2: null,
   heirs: { count: 3, otherIncome: 120_000, stateTaxRate: 0.05 },
   incomeStreams: [
-    { id: "a", label: "Pension", kind: "ordinary", annualAmount: 24_000, startAge: 65, endAge: 92, inflationAdjusted: false },
+    { id: "a", label: "Pension", kind: "ordinary", annualAmount: 24_000, startAge: 65, endAge: 92, inflationAdjusted: false, qbi: true },
     { id: "b", label: "Brokerage dividends", kind: "qualified", annualAmount: 9_000, startAge: 63, endAge: 92, inflationAdjusted: true },
     { id: "c", label: "Munis", kind: "taxExempt", annualAmount: 4_000, startAge: 63, endAge: 80, inflationAdjusted: true },
   ],
@@ -71,6 +74,7 @@ describe("importing settings from an Excel report", () => {
     expect(stripIds(res.inputs)).toEqual(stripIds(custom));
     expect(res.fieldsRead).toBe(INPUT_FIELDS.length);
     expect(res.missing).toEqual([]);
+    expect(res.defaulted).toEqual([]);
     expect(res.warnings).toEqual([]);
     expect(res.incomeStreams).toBe(3);
     expect(res.legacyFormat).toBe(false);
@@ -95,12 +99,14 @@ describe("importing settings from an Excel report", () => {
     ws.getCell(rowOf(ws, "lifespan"), 2).value = { formula: "90+5", result: 95 };
     ws.getCell(rowOf(ws, "priorMagi1"), 2).value = null;
     ws.getCell(rowOf(ws, "priorMagi2"), 2).value = 175_000;
+    ws.getCell(rowOf(ws, "taxIncrease.mode"), 2).value = "percent of each rate";
+    ws.getCell(rowOf(ws, "expenses.monthly"), 2).value = "$20,000";
     // Edit one income row, remove one, add one in a spare row.
     const h = incomeHeaderRow(ws);
     ws.getCell(h + 1, 3).value = 30_000;
     for (let c = 1; c <= 6; c++) ws.getCell(h + 2, c).value = null;
     const add = h + 4;
-    ["Rental", "Ordinary (pension/wages/rental)", 12_000, 70, 85, "Yes"].forEach((v, c) => (ws.getCell(add, c + 1).value = v));
+    ["Rental", "Ordinary (pension/wages/rental)", 12_000, 70, 85, "Yes", "no"].forEach((v, c) => (ws.getCell(add, c + 1).value = v));
 
     const res = readInputsSheet(await saveAndReload(wb), defaultInputs());
     const i = res.inputs;
@@ -113,12 +119,15 @@ describe("importing settings from an Excel report", () => {
     expect(i.lifespan).toBe(95);
     expect(i.priorMagi1).toBeNull();
     expect(i.priorMagi2).toBe(175_000);
+    expect(i.taxIncrease.mode).toBe("relative");
+    expect(i.expenses.monthly).toBe(20_000);
     expect(res.warnings.some((w) => w.includes("Investment return") && w.includes("7%"))).toBe(true);
     expect(i.incomeStreams.map((s) => [s.label, s.kind, s.annualAmount, s.startAge, s.endAge, s.inflationAdjusted])).toEqual([
       ["Pension", "ordinary", 30_000, 65, 92, false],
       ["Munis", "taxExempt", 4_000, 63, 80, true],
       ["Rental", "ordinary", 12_000, 70, 85, true],
     ]);
+    expect(i.incomeStreams.map((s) => !!s.qbi)).toEqual([true, false, false]);
   });
 
   it("keeps current values for invalid or missing settings and says so", async () => {
@@ -171,7 +180,17 @@ describe("importing settings from an Excel report", () => {
 
     const res = readInputsSheet(await saveAndReload(wb), defaultInputs());
     expect(res.legacyFormat).toBe(true);
-    expect(stripIds(res.inputs)).toEqual(stripIds(custom));
+    // Settings added later are set so the old report is recalculated as it originally was.
+    const asOriginally: PlannerInputs = {
+      ...custom,
+      outsideReturn: custom.investmentReturn,
+      expenses: { ...defaultInputs().expenses, enabled: false },
+      taxIncrease: { ...defaultInputs().taxIncrease, enabled: false },
+      incomeStreams: custom.incomeStreams.map(({ qbi: _q, ...rest }) => rest),
+    };
+    expect(stripIds(res.inputs)).toEqual(stripIds(asOriginally));
+    expect(res.defaulted).toEqual(expect.arrayContaining(["Outside account return (nominal)", "Model living expenses", "Model a future tax-rate increase"]));
+    expect(res.missing).toEqual([]);
     expect(res.warnings).toEqual([]);
   });
 

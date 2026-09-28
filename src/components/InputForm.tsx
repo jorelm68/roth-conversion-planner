@@ -1,7 +1,9 @@
 "use client";
 
-import { rmdStartAge, type IncomeKind, type IncomeStream, type PlannerInputs, type TaxPaymentMode } from "@/engine";
+import { rmdStartAge, type IncomeKind, type IncomeStream, type PlannerInputs, type TaxIncreaseMode, type TaxPaymentMode } from "@/engine";
+import { QBI } from "@/engine/taxData";
 import { Card, NumField } from "./Field";
+import { money } from "./format";
 
 interface Props {
   inputs: PlannerInputs;
@@ -17,9 +19,26 @@ const KIND_LABELS: Record<IncomeKind, string> = {
 };
 
 const PAYMENT_MODES: { id: TaxPaymentMode; label: string; hint: string }[] = [
-  { id: "unlimited", label: "I can pay conversion taxes from other savings", hint: "Assumes you have enough outside funds. The tax is not taken out of the IRA." },
-  { id: "limited", label: "Pay from my outside account balance, then from the IRA", hint: "Uses the outside balance above; once it runs out, tax is withheld from the converted amount." },
-  { id: "fromIra", label: "I cannot pay from outside funds", hint: "Tax is withheld from the IRA. Before age 59½ the withheld amount also incurs the 10% early-withdrawal penalty." },
+  {
+    id: "unlimited",
+    label: "I can pay conversion taxes from other savings",
+    hint: "Assumes you have enough outside funds. The tax is not taken out of the IRA. If the outside balance runs out it goes negative (extra funds needed), including for living expenses.",
+  },
+  {
+    id: "limited",
+    label: "Pay from my outside account balance, then from the IRA",
+    hint: "Uses the outside balance above; once it runs out, tax is withheld from the converted amount. With living expenses on, spending is then drawn from the Traditional IRA (taxable), then the Roth.",
+  },
+  {
+    id: "fromIra",
+    label: "I cannot pay from outside funds",
+    hint: "Conversion tax is withheld from the IRA. Before age 59½ the withheld amount also incurs the 10% early-withdrawal penalty. The outside account is used only for living expenses.",
+  },
+];
+
+const HIKE_MODES: { id: TaxIncreaseMode; label: string }[] = [
+  { id: "relative", label: "% of each rate (20% turns 24% into 28.8%)" },
+  { id: "points", label: "Percentage points (5 turns 24% into 29%)" },
 ];
 
 let counter = 0;
@@ -53,7 +72,8 @@ export function InputForm({ inputs, onChange, onReset }: Props) {
         <NumField label="Traditional IRA balance" value={i.tradIraBalance} prefix="$" onChange={(v) => onChange({ tradIraBalance: v ?? 0 })} />
         <NumField label="After-tax basis in Traditional IRAs" value={i.tradIraBasis} prefix="$" onChange={(v) => onChange({ tradIraBasis: v ?? 0 })} hint="Form 8606 basis. Makes part of each distribution/conversion tax-free (pro-rata rule). Usually $0." />
         <NumField label="Roth IRA balance" value={i.rothBalance} prefix="$" onChange={(v) => onChange({ rothBalance: v ?? 0 })} />
-        <NumField label="Outside (taxable) account balance" value={i.outsideBalance} prefix="$" onChange={(v) => onChange({ outsideBalance: v ?? 0 })} hint="Cash / brokerage funds available to pay taxes." />
+        <NumField label="Outside (taxable) account balance" value={i.outsideBalance} prefix="$" onChange={(v) => onChange({ outsideBalance: v ?? 0 })} hint="Cash / brokerage funds available to pay taxes (and living expenses, if modeled)." />
+        <NumField label="Outside account return (nominal)" value={i.outsideReturn} percent suffix="%" step={0.1} onChange={(v) => onChange({ outsideReturn: v ?? 0 })} hint="Usually lower than the long-term market return used for the IRAs (e.g. cash or bonds). Tax drag is subtracted from it." />
         <div className="field wide">
           <span className="field-label">How will conversion taxes be paid?</span>
           {PAYMENT_MODES.map((m) => (
@@ -82,9 +102,70 @@ export function InputForm({ inputs, onChange, onReset }: Props) {
       </Card>
 
       <Card title="Investment assumptions">
-        <NumField label="Assumed investment return (nominal)" value={i.investmentReturn} percent suffix="%" step={0.1} onChange={(v) => onChange({ investmentReturn: v ?? 0 })} />
+        <NumField label="Assumed investment return (nominal)" value={i.investmentReturn} percent suffix="%" step={0.1} onChange={(v) => onChange({ investmentReturn: v ?? 0 })} hint="Traditional and Roth IRAs. The outside account has its own return (Accounts today)." />
         <NumField label="Inflation" value={i.inflation} percent suffix="%" step={0.1} onChange={(v) => onChange({ inflation: v ?? 0 })} hint="Also indexes tax brackets, deductions, IRMAA tiers, and inflation-adjusted income." />
         <NumField label="Tax drag on outside account" value={i.outsideTaxDrag} percent suffix="%" step={0.1} onChange={(v) => onChange({ outsideTaxDrag: v ?? 0 })} hint="Annual return lost to taxes on the outside account." />
+      </Card>
+
+      <Card
+        title="Living expenses"
+        note={
+          i.expenses.enabled
+            ? "All income goes into the outside account, and living expenses and every tax are paid from it. When it runs out, the payment choice under Accounts today decides what happens."
+            : "Off: your other income is assumed to cover your living costs and its own taxes, so the outside account only receives RMDs and pays the extra tax on IRA money. That is why it can keep growing."
+        }
+      >
+        <label className="field wide check">
+          <input type="checkbox" checked={i.expenses.enabled} onChange={(e) => onChange({ expenses: { ...i.expenses, enabled: e.target.checked } })} />
+          <span>Model my living expenses</span>
+        </label>
+        {i.expenses.enabled && (
+          <NumField
+            label="Monthly living expenses"
+            value={i.expenses.monthly}
+            prefix="$"
+            onChange={(v) => onChange({ expenses: { ...i.expenses, monthly: v ?? 0 } })}
+            hint={`Today's dollars, excluding income taxes (they are calculated). Grows with inflation: ${money(i.expenses.monthly * 12)} a year now.`}
+          />
+        )}
+      </Card>
+
+      <Card
+        title="Future tax rates (what if)"
+        note="Test a tax increase: ordinary income tax rates go up from a chosen year on income above a level you set. Applies to you and to your heirs."
+      >
+        <label className="field wide check">
+          <input type="checkbox" checked={i.taxIncrease.enabled} onChange={(e) => onChange({ taxIncrease: { ...i.taxIncrease, enabled: e.target.checked } })} />
+          <span>Model a future tax-rate increase</span>
+        </label>
+        {i.taxIncrease.enabled && (
+          <>
+            <NumField label="Higher rates start in tax year" value={i.taxIncrease.startYear} onChange={(v) => onChange({ taxIncrease: { ...i.taxIncrease, startYear: v ?? i.taxIncrease.startYear } })} />
+            <NumField
+              label="Rate increase"
+              value={i.taxIncrease.amount}
+              percent
+              suffix={i.taxIncrease.mode === "points" ? "pts" : "%"}
+              step={0.1}
+              onChange={(v) => onChange({ taxIncrease: { ...i.taxIncrease, amount: v ?? 0 } })}
+            />
+            <label className="field wide">
+              <span className="field-label">Increase is measured as</span>
+              <select value={i.taxIncrease.mode} onChange={(e) => onChange({ taxIncrease: { ...i.taxIncrease, mode: e.target.value as TaxIncreaseMode } })}>
+                {HIKE_MODES.map((m) => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </select>
+            </label>
+            <NumField
+              label="For taxable income above"
+              value={i.taxIncrease.threshold}
+              prefix="$"
+              onChange={(v) => onChange({ taxIncrease: { ...i.taxIncrease, threshold: v ?? 0 } })}
+              hint="Ordinary taxable income, 2026 dollars; indexed for inflation like the brackets. $0 raises every bracket."
+            />
+          </>
+        )}
       </Card>
 
       <Card title="Health insurance" note="Medicare IRMAA is always modeled from age 65 (based on income two years earlier).">
@@ -110,7 +191,11 @@ export function InputForm({ inputs, onChange, onReset }: Props) {
 
       <section className="card streams">
         <h2>Other income</h2>
-        <p className="note">Pensions, rental income, interest, dividends, gains, etc. that affect your bracket. Social Security and wages are entered above.</p>
+        <p className="note">
+          Pensions, rental income, interest, dividends, gains, etc. that affect your bracket. Social Security and wages are entered above. Tick <strong>QBI (§199A)</strong> for
+          ordinary income that is qualified business income (for example some retired-partner payments): it earns a deduction of 20% of that income, phased out as
+          taxable income rises from {money(QBI.threshold[i.filingStatus])} to {money(QBI.threshold[i.filingStatus] + QBI.phaseIn[i.filingStatus])} (2026, {i.filingStatus === "mfj" ? "married filing jointly" : "single"}).
+        </p>
         {i.incomeStreams.length === 0 && <p className="hint">No other income added.</p>}
         {i.incomeStreams.map((s) => (
           <div className="stream" key={s.id}>
@@ -132,6 +217,10 @@ export function InputForm({ inputs, onChange, onReset }: Props) {
             <label className="field check">
               <input type="checkbox" checked={s.inflationAdjusted} onChange={(e) => setStream(s.id, { inflationAdjusted: e.target.checked })} />
               <span>Inflation-adjusted</span>
+            </label>
+            <label className="field check" title={s.kind === "ordinary" ? "Qualifies for the 20% qualified business income deduction (IRC §199A)" : "Only ordinary income can be qualified business income"}>
+              <input type="checkbox" disabled={s.kind !== "ordinary"} checked={s.kind === "ordinary" && !!s.qbi} onChange={(e) => setStream(s.id, { qbi: e.target.checked })} />
+              <span>QBI (§199A)</span>
             </label>
             <button type="button" className="link danger" onClick={() => onChange({ incomeStreams: i.incomeStreams.filter((x) => x.id !== s.id) })}>Remove</button>
           </div>

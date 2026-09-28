@@ -1,4 +1,4 @@
-import type { FilingStatus, IncomeKind, PlannerInputs, TaxPaymentMode } from "@/engine";
+import type { FilingStatus, IncomeKind, PlannerInputs, TaxIncreaseMode, TaxPaymentMode } from "@/engine";
 
 /**
  * Single source of truth for the "Inputs" sheet of the Excel report. The writer and the importer both use
@@ -6,8 +6,8 @@ import type { FilingStatus, IncomeKind, PlannerInputs, TaxPaymentMode } from "@/
  * written into the workbook and old files depend on them. Labels are also matched (for reports exported
  * before the Field ID column existed), so avoid renaming them too.
  */
-export type FieldKind = "year" | "age" | "count" | "usd" | "usdOrBlank" | "pct" | "filing" | "payment" | "yesno";
-export type FieldValue = number | boolean | null | FilingStatus | TaxPaymentMode;
+export type FieldKind = "year" | "age" | "count" | "usd" | "usdOrBlank" | "pct" | "filing" | "payment" | "yesno" | "hikeMode";
+export type FieldValue = number | boolean | null | FilingStatus | TaxPaymentMode | TaxIncreaseMode;
 
 export interface InputField {
   key: string;
@@ -16,6 +16,11 @@ export interface InputField {
   note: string;
   get: (i: PlannerInputs) => FieldValue;
   set: (i: PlannerInputs, v: FieldValue) => void;
+  /**
+   * For settings added after the first reports were exported: the value to use when a file does not contain the
+   * setting, chosen so an older report is recalculated the way it was originally (given the other imported values).
+   */
+  legacy?: (i: PlannerInputs) => FieldValue;
 }
 
 export const FILING_LABELS: Record<FilingStatus, string> = { single: "Single", mfj: "Married filing jointly" };
@@ -32,6 +37,11 @@ export const KIND_LABELS: Record<IncomeKind, string> = {
   interest: "Interest / non-qualified dividends",
   qualified: "Qualified dividends / LT gains",
   taxExempt: "Tax-exempt interest",
+};
+
+export const HIKE_LABELS: Record<TaxIncreaseMode, string> = {
+  relative: "Percent of each rate",
+  points: "Percentage points",
 };
 
 export const YES_NO = ["Yes", "No"];
@@ -58,7 +68,15 @@ export const INPUT_FIELDS: InputField[] = [
   { key: "lifespan", label: "Estimated lifespan (wealth evaluated at age)", kind: "age", note: "", get: (i) => i.lifespan, set: (i, v) => { i.lifespan = v as number; } },
   { key: "investmentReturn", label: "Investment return (nominal)", kind: "pct", note: PCT_NOTE, get: (i) => i.investmentReturn, set: (i, v) => { i.investmentReturn = v as number; } },
   { key: "inflation", label: "Inflation", kind: "pct", note: PCT_NOTE, get: (i) => i.inflation, set: (i, v) => { i.inflation = v as number; } },
+  { key: "outsideReturn", label: "Outside account return (nominal)", kind: "pct", note: `${PCT_NOTE}; before tax drag`, get: (i) => i.outsideReturn, set: (i, v) => { i.outsideReturn = v as number; }, legacy: (i) => i.investmentReturn },
   { key: "outsideTaxDrag", label: "Tax drag on outside account", kind: "pct", note: PCT_NOTE, get: (i) => i.outsideTaxDrag, set: (i, v) => { i.outsideTaxDrag = v as number; } },
+  { key: "expenses.enabled", label: "Model living expenses", kind: "yesno", note: "Yes or No. No = other income covers spending and its own taxes", get: (i) => i.expenses.enabled, set: (i, v) => { i.expenses.enabled = v as boolean; }, legacy: () => false },
+  { key: "expenses.monthly", label: "Monthly living expenses (today's $)", kind: "usd", note: "Excluding income taxes; grows with inflation. Used only when living expenses is Yes", get: (i) => i.expenses.monthly, set: (i, v) => { i.expenses.monthly = v as number; } },
+  { key: "taxIncrease.enabled", label: "Model a future tax-rate increase", kind: "yesno", note: "Yes or No", get: (i) => i.taxIncrease.enabled, set: (i, v) => { i.taxIncrease.enabled = v as boolean; }, legacy: () => false },
+  { key: "taxIncrease.startYear", label: "Higher rates start in tax year", kind: "year", note: "Used only when the tax-rate increase is Yes", get: (i) => i.taxIncrease.startYear, set: (i, v) => { i.taxIncrease.startYear = v as number; } },
+  { key: "taxIncrease.amount", label: "Tax-rate increase", kind: "pct", note: "e.g. 20% (percent of each rate) or 5% (percentage points)", get: (i) => i.taxIncrease.amount, set: (i, v) => { i.taxIncrease.amount = v as number; } },
+  { key: "taxIncrease.mode", label: "Tax-rate increase measured as", kind: "hikeMode", note: "Percent of each rate / Percentage points", get: (i) => i.taxIncrease.mode, set: (i, v) => { i.taxIncrease.mode = v as TaxIncreaseMode; } },
+  { key: "taxIncrease.threshold", label: "Tax-rate increase applies above taxable income of", kind: "usd", note: "Ordinary taxable income in 2026 dollars; indexed like the brackets", get: (i) => i.taxIncrease.threshold, set: (i, v) => { i.taxIncrease.threshold = v as number; } },
   { key: "aca.enabled", label: "ACA marketplace insurance before Medicare", kind: "yesno", note: "Yes or No", get: (i) => i.aca.enabled, set: (i, v) => { i.aca.enabled = v as boolean; } },
   { key: "aca.benchmarkPremium", label: "ACA benchmark premium per year (today's $)", kind: "usd", note: "Used only when ACA is Yes", get: (i) => i.aca.benchmarkPremium, set: (i, v) => { i.aca.benchmarkPremium = v as number; } },
   { key: "aca.premiumGrowth", label: "ACA premium growth", kind: "pct", note: `${PCT_NOTE}; used only when ACA is Yes`, get: (i) => i.aca.premiumGrowth, set: (i, v) => { i.aca.premiumGrowth = v as number; } },
@@ -77,5 +95,7 @@ export function irrelevantFields(i: PlannerInputs): Set<string> {
     out.add("aca.benchmarkPremium");
     out.add("aca.premiumGrowth");
   }
+  if (!i.expenses.enabled) out.add("expenses.monthly");
+  if (!i.taxIncrease.enabled) for (const k of ["startYear", "amount", "mode", "threshold"]) out.add(`taxIncrease.${k}`);
   return out;
 }
