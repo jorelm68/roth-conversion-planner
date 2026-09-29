@@ -1,4 +1,4 @@
-# Roth Conversion Planner
+# Tax Conversion Planner
 
 A browser-only tool that finds the year-by-year Traditional → Roth IRA conversion schedule that maximizes your
 **after-tax wealth at your chosen lifespan (default 90)**, and compares it side by side with simpler strategies

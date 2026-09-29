@@ -16,7 +16,7 @@ export default function Home() {
     {/* The planner stays mounted while the formulas view is open, so everything is as you left it when you return. */}
     <main hidden={view !== "planner"}>
       <header className="top">
-        <h1>Roth Conversion Planner</h1>
+        <h1>Tax Conversion Planner</h1>
         <p>
           Finds the year-by-year Traditional → Roth IRA conversion schedule that maximizes your after-tax wealth, weighing brackets, the Social Security tax
           torpedo, Medicare IRMAA, ACA subsidies, RMDs and what your heirs will owe. <strong>Everything runs in your browser. Nothing is sent or stored.</strong>
