@@ -3,7 +3,7 @@ import { PlannerProvider } from "@/components/PlannerProvider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Roth Conversion Planner",
+  title: "Tax Conversion Planner",
   description: "Find the Traditional-to-Roth IRA conversion schedule that maximizes your after-tax wealth. Runs entirely in your browser; nothing is stored or sent anywhere.",
 };
 

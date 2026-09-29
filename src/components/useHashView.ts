@@ -39,10 +39,10 @@ export function useHashView(): { view: "planner" | "how"; hash: string } {
     if (view === "how") {
       const target = (hash.length > 1 && document.getElementById(hash.slice(1))) || document.getElementById(HOW_HASH.slice(1));
       target?.scrollIntoView();
-      document.title = "How It's Calculated · Roth Conversion Planner";
+      document.title = "How It's Calculated · Tax Conversion Planner";
     } else {
       window.scrollTo(0, plannerScroll.current);
-      document.title = "Roth Conversion Planner";
+      document.title = "Tax Conversion Planner";
     }
   }, [view, hash]);
 

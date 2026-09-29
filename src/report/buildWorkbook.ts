@@ -177,7 +177,7 @@ function addSummary(wb: Workbook, i: PlannerInputs, out: PlannerOutput) {
   const none = out.scenarios.find((s) => s.id === "none")!;
   const vr = viewOf(rec, false, i.inflation);
   const vn = viewOf(none, false, i.inflation);
-  ws.addRow(["Roth Conversion Planner: report"]).font = { bold: true, size: 16 };
+  ws.addRow(["Tax Conversion Planner: report"]).font = { bold: true, size: 16 };
   ws.addRow([`Generated ${new Date().toLocaleString()} in your browser. No data was sent or stored by the website.`]).font = { italic: true, color: { argb: "FF5B6678" } };
   ws.addRow(["Confidential: this file contains personal financial information. Store or share it accordingly."]).font = { bold: true, color: { argb: "FFB42318" } };
   ws.addRow([]);
@@ -342,7 +342,7 @@ function addAssumptions(wb: Workbook) {
 
 /** Builds the full Excel report. Pure: no I/O. */
 export function buildWorkbook(wb: Workbook, inputs: PlannerInputs, out: PlannerOutput): Workbook {
-  wb.creator = "Roth Conversion Planner";
+  wb.creator = "Tax Conversion Planner";
   wb.created = new Date();
   addSummary(wb, inputs, out);
   addInputs(wb, inputs);
