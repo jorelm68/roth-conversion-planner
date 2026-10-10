@@ -247,3 +247,6 @@ a.btn { display: inline-block; text-decoration: none; }
   .m-block { break-inside: avoid; }
   .table-scroll { overflow: visible; border: 0; }
 }
+
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand img { flex: none; border-radius: 9px; }
